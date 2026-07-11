@@ -2,9 +2,13 @@ use std::sync::Arc;
 
 use cappy_core::{
     command::CommandName,
-    resolver::{CandidateMetadata, MusicProvider, candidate_score, classify_input, normalize},
+    resolver::{
+        CandidateMetadata, ContentVersion, MusicProvider, candidate_score, classify_input,
+        infer_content_version, normalize, preferred_content_version, score_content_version,
+    },
     settings::Settings,
 };
+use cappy_dj::{DjContext, DjService, PersonalityLevel, TalkFrequency, VoicePreset};
 use lavalink_rs::{
     model::{
         events,
@@ -20,11 +24,13 @@ const MAX_ARGUMENT_LENGTH: usize = 500;
 const MAX_PLAYLIST_ITEMS: usize = 100;
 const MAX_QUEUE_ITEMS: usize = 500;
 const QUEUE_DISPLAY_ITEMS: usize = 10;
+const DEFAULT_VOLUME: u16 = 60;
 
 #[derive(Clone)]
 pub struct PlaybackService {
     lavalink: LavalinkClient,
     database: SqlitePool,
+    dj: DjService,
 }
 
 #[derive(Debug, Error)]
@@ -53,6 +59,10 @@ pub enum PlaybackError {
     Lavalink(String),
     #[error("music metadata persistence failed: {0}")]
     Data(String),
+    #[error("DJ operation failed: {0}")]
+    Dj(String),
+    #[error("invalid command setting")]
+    InvalidSetting,
 }
 
 impl PlaybackError {
@@ -70,6 +80,8 @@ impl PlaybackError {
             Self::Voice(_) => "voice_connection",
             Self::Lavalink(_) => "lavalink",
             Self::Data(_) => "data",
+            Self::Dj(_) => "dj",
+            Self::InvalidSetting => "invalid_setting",
         }
     }
 
@@ -101,12 +113,16 @@ impl PlaybackError {
             Self::Data(_) => {
                 "The music is ready, but I couldn't save its history. Try again in a moment."
             }
+            Self::Dj(_) => "The DJ booth had a small technical moment. Music will keep playing.",
+            Self::InvalidSetting => {
+                "That setting doesn't exist. Try `cap!help` for the available options."
+            }
         }
     }
 }
 
 impl PlaybackService {
-    pub async fn connect(settings: &Settings, database: SqlitePool) -> Self {
+    pub async fn connect(settings: &Settings, database: SqlitePool, dj: DjService) -> Self {
         let node = NodeBuilder {
             hostname: format!("{}:{}", settings.lavalink.host, settings.lavalink.port),
             is_ssl: false,
@@ -121,7 +137,11 @@ impl PlaybackService {
             NodeDistributionStrategy::round_robin(),
         )
         .await;
-        Self { lavalink, database }
+        Self {
+            lavalink,
+            database,
+            dj,
+        }
     }
 
     pub async fn handle(
@@ -137,10 +157,20 @@ impl PlaybackService {
             CommandName::Queue => self.queue(context, message, guild_id).await,
             CommandName::Skip => self.skip(context, message, guild_id).await,
             CommandName::Stop => self.stop(context, message, guild_id).await,
+            CommandName::Clear => self.clear(context, message, guild_id).await,
             CommandName::Now => self.now(context, message, guild_id).await,
             CommandName::Pause => self.pause(context, message, guild_id, true).await,
             CommandName::Resume => self.pause(context, message, guild_id, false).await,
             CommandName::Leave => self.leave(context, message, guild_id).await,
+            CommandName::Volume => self.volume(context, message, guild_id, arguments).await,
+            CommandName::Voice => self.voice(context, message, guild_id, arguments).await,
+            CommandName::Personality => {
+                self.personality(context, message, guild_id, arguments)
+                    .await
+            }
+            CommandName::Talk => self.talk(context, message, guild_id, arguments).await,
+            CommandName::Shutup => self.shutup(context, message, guild_id).await,
+            CommandName::Intro => self.intro(context, message, guild_id).await,
             _ => Ok(()),
         }
     }
@@ -172,6 +202,12 @@ impl PlaybackService {
             )
             .await
             .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        if let Some(player) = self.lavalink.get_player_context(guild_id) {
+            player
+                .set_volume(DEFAULT_VOLUME)
+                .await
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -214,7 +250,7 @@ impl PlaybackService {
             .take(MAX_QUEUE_ITEMS.saturating_sub(current_count))
         {
             let matched = if provider.needs_playable_match() {
-                self.match_playable(guild_id, &metadata).await
+                self.match_playable(guild_id, &metadata, provider).await
             } else {
                 Ok((metadata.clone(), 1.0))
             };
@@ -235,6 +271,11 @@ impl PlaybackService {
                 "playback_source": playable.info.source_name,
                 "match_confidence": confidence,
                 "original_url": if provider == MusicProvider::Search { None } else { Some(input) },
+                "content_version": content_version_label(preferred_content_version(
+                    provider,
+                    &metadata.info.title,
+                    track_metadata(&metadata).album,
+                )),
             }));
             self.persist_resolution(
                 &metadata,
@@ -266,15 +307,51 @@ impl PlaybackService {
             .track
             .clone();
         let added = tracks.len();
-        queue
-            .append(tracks.into())
-            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
-
-        let player_data = player
+        let player_before = player
             .get_player()
             .await
             .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
-        if player_data.track.is_none() {
+        let session_opening = player_before.track.is_none() && current_count == 0;
+        let mut interleaved = Vec::with_capacity(tracks.len() + (tracks.len() / 2) + 1);
+        let mut previous_track = player_before.track.as_ref().map(|track| {
+            let (title, artist) = display_metadata(track);
+            format!("{title} by {artist}")
+        });
+        for (index, music_track) in tracks.into_iter().enumerate() {
+            let (title, artist) = display_metadata(&music_track.track);
+            if let Ok(Some(segment)) = self
+                .dj
+                .create_intro(
+                    guild_id.get(),
+                    DjContext {
+                        title: &title,
+                        artist: &artist,
+                        requester: &message.author.name,
+                        previous_track: previous_track.as_deref(),
+                        session_opening: session_opening && index == 0,
+                        personality: self.dj.settings(guild_id.get()).await.personality,
+                    },
+                    false,
+                )
+                .await
+                && let Some(audio_uri) = segment.audio_uri
+                && let Ok(Some(mut intro_track)) =
+                    self.load_single_track(guild_id, &audio_uri).await
+            {
+                intro_track.user_data = Some(serde_json::json!({
+                    "dj_segment": true,
+                    "script": segment.script,
+                }));
+                interleaved.push(TrackInQueue::from(intro_track));
+            }
+            previous_track = Some(format!("{title} by {artist}"));
+            interleaved.push(music_track);
+        }
+        queue
+            .append(interleaved.into())
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+
+        if player_before.track.is_none() {
             player
                 .skip()
                 .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
@@ -284,7 +361,7 @@ impl PlaybackService {
         let response = if let Some(name) = playlist_name {
             if provider.needs_playable_match() {
                 format!(
-                    "Added **{added} tracks** from the {} playlist `{}`. Playback source: YouTube (average match confidence {:.0}%).",
+                    "Added **{added} tracks** from the {} playlist `{}`. Playback source: YouTube (average match confidence {:.0}%). Explicit versions preferred.",
                     provider,
                     safe(&name),
                     average_confidence * 100.0
@@ -299,7 +376,7 @@ impl PlaybackService {
         } else if provider.needs_playable_match() {
             let (title, artist) = display_metadata(&first);
             format!(
-                "Added `{title}` by `{artist}` from your {provider} link. Playback source: YouTube (match confidence {:.0}%).",
+                "Added `{title}` by `{artist}` from your {provider} link. Playback source: YouTube (match confidence {:.0}%). Explicit version preferred.",
                 average_confidence * 100.0
             )
         } else {
@@ -311,6 +388,23 @@ impl PlaybackService {
             )
         };
         say(message, context, response).await
+    }
+
+    async fn load_single_track(
+        &self,
+        guild_id: GuildId,
+        uri: &str,
+    ) -> Result<Option<TrackData>, PlaybackError> {
+        let loaded = self
+            .lavalink
+            .load_tracks(guild_id, uri)
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        Ok(match loaded.data {
+            Some(TrackLoadData::Track(track)) => Some(track),
+            Some(TrackLoadData::Search(mut tracks)) => tracks.drain(..).next(),
+            _ => None,
+        })
     }
 
     async fn load_metadata(
@@ -346,32 +440,52 @@ impl PlaybackService {
         &self,
         guild_id: GuildId,
         metadata: &TrackData,
+        provider: MusicProvider,
     ) -> Result<(TrackData, f64), PlaybackError> {
         let mut candidates = Vec::new();
+        let target = track_metadata(metadata);
+        let preferred = preferred_content_version(provider, target.title, target.album);
+        let version_query = match preferred {
+            ContentVersion::Explicit => " explicit",
+            ContentVersion::Clean => " clean",
+            ContentVersion::Unknown => "",
+        };
         if let Some(isrc) = metadata.info.isrc.as_deref() {
             candidates.extend(
                 self.search_candidates(guild_id, &format!("ytsearch:{isrc}"))
+                    .await?,
+            );
+            candidates.extend(
+                self.search_candidates(guild_id, &format!("ytsearch:{isrc}{version_query}"))
                     .await?,
             );
         }
         candidates.extend(
             self.search_candidates(
                 guild_id,
-                &format!("ytsearch:{} {}", metadata.info.author, metadata.info.title),
+                &format!(
+                    "ytsearch:{} {}{}",
+                    metadata.info.author, metadata.info.title, version_query
+                ),
             )
             .await?,
         );
         candidates.sort_by(|left, right| left.info.identifier.cmp(&right.info.identifier));
         candidates.dedup_by(|left, right| left.info.identifier == right.info.identifier);
 
-        let target = track_metadata(metadata);
         let best = candidates
             .into_iter()
             .filter(|candidate| !candidate.info.is_stream)
             .map(|candidate| {
-                let score = candidate_score(&target, &track_metadata(&candidate));
+                let metadata_score = candidate_score(&target, &track_metadata(&candidate));
+                let score = score_content_version(
+                    metadata_score,
+                    preferred,
+                    infer_content_version(&candidate.info.title),
+                );
                 (candidate, score)
             })
+            .filter_map(|(candidate, score)| score.map(|score| (candidate, score)))
             .max_by(|(_, left), (_, right)| left.total_cmp(right));
         match best {
             Some((candidate, score)) if score >= 0.60 => Ok((candidate, score)),
@@ -615,6 +729,35 @@ impl PlaybackService {
         .await
     }
 
+    async fn clear(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+    ) -> Result<(), PlaybackError> {
+        requester_voice_channel(context, message, guild_id)?;
+        let Some(player) = self.lavalink.get_player_context(guild_id) else {
+            return say(message, context, "The queue is already empty.".to_owned()).await;
+        };
+        let queue = player.get_queue();
+        let count = queue
+            .get_count()
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        if count == 0 {
+            return say(message, context, "The queue is already empty.".to_owned()).await;
+        }
+        queue
+            .clear()
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        say(
+            message,
+            context,
+            format!("Cleared {count} upcoming queue item(s). The current track keeps playing."),
+        )
+        .await
+    }
+
     async fn pause(
         &self,
         context: &Context,
@@ -638,6 +781,296 @@ impl PlaybackService {
             } else {
                 "Playback resumed.".to_owned()
             },
+        )
+        .await
+    }
+
+    async fn volume(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        arguments: &str,
+    ) -> Result<(), PlaybackError> {
+        requester_voice_channel(context, message, guild_id)?;
+        let Some(player) = self.lavalink.get_player_context(guild_id) else {
+            return say(message, context, "Nothing is playing.".to_owned()).await;
+        };
+        let Some(volume) = parse_volume(arguments)? else {
+            let state = player
+                .get_player()
+                .await
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+            return say(
+                message,
+                context,
+                format!(
+                    "Shared CappyFM volume is **{}%**. For a private level, right-click CappyFM in voice and use Discord's User Volume slider.",
+                    state.volume
+                ),
+            )
+            .await;
+        };
+        player
+            .set_volume(volume)
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        say(
+            message,
+            context,
+            format!("Shared CappyFM volume set to **{volume}%**."),
+        )
+        .await
+    }
+
+    async fn voice(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        arguments: &str,
+    ) -> Result<(), PlaybackError> {
+        let parts: Vec<&str> = arguments.split_whitespace().collect();
+        if parts.is_empty() {
+            let settings = self.dj.settings(guild_id.get()).await;
+            return say(
+                message,
+                context,
+                format!(
+                    "Current DJ voice: `{}`. The DJ voice is AI-generated. Use `cap!voice list` to see presets.",
+                    settings.voice
+                ),
+            )
+            .await;
+        }
+        if parts[0].eq_ignore_ascii_case("list") {
+            let voices = VoicePreset::ALL
+                .into_iter()
+                .map(|voice| format!("`{voice}` — {}", voice.description()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return say(
+                message,
+                context,
+                format!("**DJ voice presets**\n{voices}\nThe voices are AI-generated."),
+            )
+            .await;
+        }
+        if parts[0].eq_ignore_ascii_case("preview") {
+            let preset = parts
+                .get(1)
+                .ok_or(PlaybackError::InvalidSetting)?
+                .parse::<VoicePreset>()
+                .map_err(|_| PlaybackError::InvalidSetting)?;
+            return self.preview_voice(context, message, guild_id, preset).await;
+        }
+        let preset = parts[0]
+            .parse::<VoicePreset>()
+            .map_err(|_| PlaybackError::InvalidSetting)?;
+        self.dj.set_voice(guild_id.get(), preset).await;
+        say(
+            message,
+            context,
+            format!("DJ voice set to `{preset}` for this session."),
+        )
+        .await
+    }
+
+    async fn preview_voice(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        preset: VoicePreset,
+    ) -> Result<(), PlaybackError> {
+        requester_voice_channel(context, message, guild_id)?;
+        let Some(player) = self.lavalink.get_player_context(guild_id) else {
+            return say(
+                message,
+                context,
+                "Start playback before previewing a DJ voice.".to_owned(),
+            )
+            .await;
+        };
+        let previous = self.dj.settings(guild_id.get()).await.voice;
+        self.dj.set_voice(guild_id.get(), preset).await;
+        let segment = self
+            .dj
+            .create_intro(
+                guild_id.get(),
+                DjContext {
+                    title: "a microphone check",
+                    artist: "CappyFM",
+                    requester: &message.author.name,
+                    previous_track: None,
+                    session_opening: false,
+                    personality: self.dj.settings(guild_id.get()).await.personality,
+                },
+                true,
+            )
+            .await
+            .map_err(|error| PlaybackError::Dj(error.to_string()))?;
+        self.dj.set_voice(guild_id.get(), previous).await;
+        self.enqueue_or_post_segment(context, message, guild_id, player.get_queue(), segment)
+            .await
+    }
+
+    async fn personality(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        arguments: &str,
+    ) -> Result<(), PlaybackError> {
+        if arguments.trim().is_empty() {
+            let settings = self.dj.settings(guild_id.get()).await;
+            return say(
+                message,
+                context,
+                format!("Current personality: `{}`.", settings.personality),
+            )
+            .await;
+        }
+        let level = arguments
+            .trim()
+            .parse::<PersonalityLevel>()
+            .map_err(|_| PlaybackError::InvalidSetting)?;
+        self.dj.set_personality(guild_id.get(), level).await;
+        say(
+            message,
+            context,
+            format!("DJ personality set to `{level}` for this session."),
+        )
+        .await
+    }
+
+    async fn talk(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        arguments: &str,
+    ) -> Result<(), PlaybackError> {
+        if arguments.trim().is_empty() {
+            let settings = self.dj.settings(guild_id.get()).await;
+            return say(
+                message,
+                context,
+                format!("DJ talk frequency: `{}`.", settings.frequency),
+            )
+            .await;
+        }
+        let frequency = arguments
+            .trim()
+            .parse::<TalkFrequency>()
+            .map_err(|_| PlaybackError::InvalidSetting)?;
+        self.dj.set_frequency(guild_id.get(), frequency).await;
+        say(
+            message,
+            context,
+            format!("DJ talk frequency set to `{frequency}` for this session."),
+        )
+        .await
+    }
+
+    async fn shutup(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+    ) -> Result<(), PlaybackError> {
+        self.dj
+            .set_frequency(guild_id.get(), TalkFrequency::Off)
+            .await;
+        say(
+            message,
+            context,
+            "Understood. The capybara will operate the turntables silently.".to_owned(),
+        )
+        .await
+    }
+
+    async fn intro(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+    ) -> Result<(), PlaybackError> {
+        requester_voice_channel(context, message, guild_id)?;
+        let Some(player) = self.lavalink.get_player_context(guild_id) else {
+            return say(message, context, "The queue is empty.".to_owned()).await;
+        };
+        let queue = player.get_queue();
+        let Some(next) = queue
+            .get_track(0)
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?
+        else {
+            return say(
+                message,
+                context,
+                "There is no next track to introduce.".to_owned(),
+            )
+            .await;
+        };
+        let (title, artist) = display_metadata(&next.track);
+        let segment = self
+            .dj
+            .create_intro(
+                guild_id.get(),
+                DjContext {
+                    title: &title,
+                    artist: &artist,
+                    requester: &message.author.name,
+                    previous_track: None,
+                    session_opening: false,
+                    personality: self.dj.settings(guild_id.get()).await.personality,
+                },
+                true,
+            )
+            .await
+            .map_err(|error| PlaybackError::Dj(error.to_string()))?;
+        self.enqueue_or_post_segment(context, message, guild_id, queue, segment)
+            .await
+    }
+
+    async fn enqueue_or_post_segment(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+        queue: lavalink_rs::player_context::QueueRef,
+        segment: Option<cappy_dj::DjSegment>,
+    ) -> Result<(), PlaybackError> {
+        let Some(segment) = segment else {
+            return say(
+                message,
+                context,
+                "DJ speech is off for this session.".to_owned(),
+            )
+            .await;
+        };
+        if let Some(audio_uri) = segment.audio_uri
+            && let Some(mut track) = self.load_single_track(guild_id, &audio_uri).await?
+        {
+            track.user_data = Some(serde_json::json!({
+                "dj_segment": true,
+                "script": segment.script,
+            }));
+            queue
+                .push_to_front(TrackInQueue::from(track))
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+            return say(
+                message,
+                context,
+                "DJ intro queued. The voice is AI-generated.".to_owned(),
+            )
+            .await;
+        }
+        say(
+            message,
+            context,
+            format!("DJ copy (TTS unavailable): {}", segment.script),
         )
         .await
     }
@@ -733,6 +1166,18 @@ fn track_metadata(track: &TrackData) -> CandidateMetadata<'_> {
 }
 
 fn display_metadata(track: &TrackData) -> (String, String) {
+    if track
+        .user_data
+        .as_ref()
+        .and_then(|value| value.get("dj_segment"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return (
+            "CappyFM DJ segment".to_owned(),
+            "AI-generated voice".to_owned(),
+        );
+    }
     let original = track.user_data.as_ref();
     let title = original
         .and_then(|value| value.get("original_title"))
@@ -743,6 +1188,20 @@ fn display_metadata(track: &TrackData) -> (String, String) {
         .and_then(serde_json::Value::as_str)
         .unwrap_or(&track.info.author);
     (safe(title), safe(artist))
+}
+
+fn parse_volume(input: &str) -> Result<Option<u16>, PlaybackError> {
+    if input.trim().is_empty() {
+        return Ok(None);
+    }
+    let volume = input
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| PlaybackError::InvalidSetting)?;
+    if volume > 100 {
+        return Err(PlaybackError::InvalidSetting);
+    }
+    Ok(Some(volume))
 }
 
 fn playback_source_suffix(data: &Option<serde_json::Value>) -> String {
@@ -773,6 +1232,14 @@ fn provider_label(provider: &str) -> &'static str {
         "apple_music" => "Apple Music",
         "soundcloud" => "SoundCloud",
         _ => "YouTube",
+    }
+}
+
+fn content_version_label(version: ContentVersion) -> &'static str {
+    match version {
+        ContentVersion::Explicit => "explicit",
+        ContentVersion::Clean => "clean",
+        ContentVersion::Unknown => "unknown",
     }
 }
 
@@ -864,5 +1331,15 @@ mod tests {
             safe("`track` by @everyone\nnow"),
             "'track' by @\u{200b}everyone now"
         );
+    }
+
+    #[test]
+    fn volume_is_bounded_to_discord_safe_percentages() {
+        assert_eq!(parse_volume("").unwrap(), None);
+        assert_eq!(parse_volume("0").unwrap(), Some(0));
+        assert_eq!(parse_volume("100").unwrap(), Some(100));
+        assert!(parse_volume("101").is_err());
+        assert!(parse_volume("loud").is_err());
+        assert_eq!(DEFAULT_VOLUME, 60);
     }
 }

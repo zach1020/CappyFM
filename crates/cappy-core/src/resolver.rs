@@ -98,6 +98,58 @@ pub struct CandidateMetadata<'a> {
     pub isrc: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentVersion {
+    Explicit,
+    Clean,
+    Unknown,
+}
+
+/// Spotify and Apple Music matching defaults to explicit unless the source
+/// metadata clearly identifies a clean/edit version.
+pub fn preferred_content_version(
+    provider: MusicProvider,
+    title: &str,
+    album: Option<&str>,
+) -> ContentVersion {
+    let combined = format!("{title} {}", album.unwrap_or_default());
+    match infer_content_version(&combined) {
+        ContentVersion::Unknown if provider.needs_playable_match() => ContentVersion::Explicit,
+        version => version,
+    }
+}
+
+pub fn infer_content_version(value: &str) -> ContentVersion {
+    let normalized = normalize(value);
+    if ["clean", "radio edit", "edited", "censored"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        ContentVersion::Clean
+    } else if ["explicit", "uncensored", "dirty"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        ContentVersion::Explicit
+    } else {
+        ContentVersion::Unknown
+    }
+}
+
+pub fn score_content_version(
+    metadata_score: f64,
+    preferred: ContentVersion,
+    candidate: ContentVersion,
+) -> Option<f64> {
+    match (preferred, candidate) {
+        (ContentVersion::Explicit, ContentVersion::Clean)
+        | (ContentVersion::Clean, ContentVersion::Explicit) => None,
+        (ContentVersion::Explicit, ContentVersion::Explicit)
+        | (ContentVersion::Clean, ContentVersion::Clean) => Some((metadata_score + 0.15).min(1.0)),
+        _ => Some(metadata_score),
+    }
+}
+
 /// Scores a playable candidate using the MVP's documented weights. An exact
 /// ISRC match wins outright; otherwise missing fields simply contribute zero.
 pub fn candidate_score(target: &CandidateMetadata<'_>, candidate: &CandidateMetadata<'_>) -> f64 {
@@ -240,5 +292,27 @@ mod tests {
             isrc: None,
         };
         assert!(candidate_score(&target, &candidate) >= 0.70);
+    }
+
+    #[test]
+    fn provider_links_default_to_explicit_and_reject_clean_candidates() {
+        let preferred = preferred_content_version(MusicProvider::Spotify, "Track", None);
+        assert_eq!(preferred, ContentVersion::Explicit);
+        assert_eq!(
+            score_content_version(0.9, preferred, ContentVersion::Clean),
+            None
+        );
+        assert_eq!(
+            score_content_version(0.75, preferred, ContentVersion::Explicit),
+            Some(0.9)
+        );
+    }
+
+    #[test]
+    fn clearly_labeled_clean_source_is_respected() {
+        assert_eq!(
+            preferred_content_version(MusicProvider::AppleMusic, "Song (Radio Edit)", None),
+            ContentVersion::Clean
+        );
     }
 }

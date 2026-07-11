@@ -1,8 +1,8 @@
 use std::fmt;
 
-pub const PRIVACY_RESPONSE: &str = "🔒 CappyFM does not monitor Discord conversation. It immediately ignores messages that do not start with `cappy!` or `cap!`. It stores only music-related activity such as requested tracks, likes, skips, session settings, and listening history. Ordinary chat is never sent to AI.";
+pub const PRIVACY_RESPONSE: &str = "🔒 CappyFM does not monitor Discord conversation. It immediately ignores messages that do not start with `cappy!`, `capy!`, or `cap!`. It stores only music-related activity such as requested tracks, likes, skips, session settings, and listening history. Ordinary chat is never sent to AI.";
 
-pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\n`cap!play <URL or search>` — YouTube, SoundCloud, Spotify, or Apple Music\n`cap!queue` — show up next\n`cap!now` — show the current track\n`cap!pause` / `cap!resume` — control playback\n`cap!skip` — skip the current track\n`cap!stop` — stop and clear the queue\n`cap!leave` — disconnect\n`cap!privacy` — explain the privacy boundary\n\nSpotify and Apple Music provide metadata; playback is matched to YouTube. Both prefixes work.";
+pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\n`cap!play <URL or search>` — queue music\n`cap!queue` / `cap!now` — inspect playback\n`cap!pause` / `cap!resume` / `cap!skip` / `cap!clear` / `cap!stop`\n`cap!volume <0-100>` — shared output; use Discord User Volume for private levels\n`cap!voice [list|preset|preview preset]` — AI-generated DJ voice\n`cap!personality <chill|quirky|unhinged>`\n`cap!talk <off|on|less|normal|more>` / `cap!shutup`\n`cap!intro` — introduce the next track\n`cap!leave` / `cap!privacy`\n\nSpotify and Apple Music are metadata sources matched to YouTube playback. The `cap!`, `capy!`, and `cappy!` prefixes all work.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandName {
@@ -12,10 +12,17 @@ pub enum CommandName {
     Queue,
     Skip,
     Stop,
+    Clear,
     Now,
     Pause,
     Resume,
     Leave,
+    Volume,
+    Voice,
+    Personality,
+    Talk,
+    Shutup,
+    Intro,
     Unknown,
 }
 
@@ -28,10 +35,17 @@ impl fmt::Display for CommandName {
             Self::Queue => "queue",
             Self::Skip => "skip",
             Self::Stop => "stop",
+            Self::Clear => "clear",
             Self::Now => "now",
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::Leave => "leave",
+            Self::Volume => "volume",
+            Self::Voice => "voice",
+            Self::Personality => "personality",
+            Self::Talk => "talk",
+            Self::Shutup => "shutup",
+            Self::Intro => "intro",
             Self::Unknown => "unknown",
         })
     }
@@ -82,10 +96,17 @@ impl PrefixParser {
             "queue" => CommandName::Queue,
             "skip" => CommandName::Skip,
             "stop" => CommandName::Stop,
+            "clear" => CommandName::Clear,
             "now" | "np" => CommandName::Now,
             "pause" => CommandName::Pause,
             "resume" => CommandName::Resume,
             "leave" => CommandName::Leave,
+            "volume" => CommandName::Volume,
+            "voice" => CommandName::Voice,
+            "personality" => CommandName::Personality,
+            "talk" => CommandName::Talk,
+            "shutup" => CommandName::Shutup,
+            "intro" => CommandName::Intro,
             _ => CommandName::Unknown,
         };
 
@@ -98,17 +119,26 @@ mod tests {
     use super::*;
 
     fn parser() -> PrefixParser {
-        PrefixParser::new(["cappy!", "cap!"])
+        PrefixParser::new(["cappy!", "capy!", "cap!"])
     }
 
     #[test]
-    fn both_prefixes_parse_identically() {
+    fn all_prefixes_parse_identically() {
         assert_eq!(parser().parse("cap!help"), parser().parse("cappy!help"));
+        assert_eq!(parser().parse("cap!help"), parser().parse("capy!help"));
     }
 
     #[test]
     fn prefix_and_command_are_case_insensitive() {
         assert_eq!(parser().parse("CaP!HeLp").unwrap().name, CommandName::Help);
+    }
+
+    #[test]
+    fn clear_command_is_recognized() {
+        assert_eq!(
+            parser().parse("cap!clear").unwrap().name,
+            CommandName::Clear
+        );
     }
 
     #[test]
@@ -126,6 +156,6 @@ mod tests {
 
     #[test]
     fn similar_but_invalid_prefix_is_rejected() {
-        assert!(parser().parse("capy!help").is_none());
+        assert!(parser().parse("capyy!help").is_none());
     }
 }

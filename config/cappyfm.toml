@@ -1,5 +1,5 @@
 [prefixes]
-values = ["cappy!", "cap!"]
+values = ["cappy!", "capy!", "cap!"]
 
 [privacy]
 ignore_non_commands = true
@@ -9,4 +9,3 @@ store_search_queries = false
 [lavalink]
 host = "localhost"
 port = 2333
-

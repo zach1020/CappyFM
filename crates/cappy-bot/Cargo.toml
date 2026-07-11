@@ -8,7 +8,9 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+axum.workspace = true
 cappy-core = { path = "../cappy-core" }
+cappy-dj = { path = "../cappy-dj" }
 dotenvy.workspace = true
 serenity.workspace = true
 serde_json.workspace = true

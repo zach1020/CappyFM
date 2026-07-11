@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cappy-core", "crates/cappy-bot"]
+members = ["crates/cappy-core", "crates/cappy-dj", "crates/cappy-bot"]
 resolver = "2"
 
 [workspace.package]
@@ -11,10 +11,13 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+axum = "0.8"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 dotenvy = "0.15"
+hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 serenity = { version = "0.12.5", default-features = false, features = ["builder", "cache", "client", "gateway", "http", "model", "rustls_backend", "voice"] }
 songbird = { version = "0.5", default-features = false, features = ["gateway", "serenity", "native"] }
 lavalink-rs = { version = "0.15", default-features = false, features = ["macros", "serenity", "songbird", "tungstenite-rustls-webpki-roots"] }
@@ -25,6 +28,7 @@ tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "signal", "
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [profile.release]
 lto = "thin"

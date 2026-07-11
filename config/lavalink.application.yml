@@ -11,7 +11,9 @@ lavalink:
       twitch: true
       vimeo: true
       nico: true
-      http: false
+      # Only bot-generated internal DJ audio URLs reach this source. User URLs
+      # remain provider-allowlisted by CappyFM before Lavalink sees them.
+      http: true
       local: false
     filters:
       volume: true

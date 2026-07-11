@@ -3,10 +3,18 @@ mod playback;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result};
+use axum::{
+    Router,
+    body::Body,
+    extract::{Path, State},
+    http::{Response, StatusCode, header},
+    routing::get,
+};
 use cappy_core::{
     command::{CommandName, HELP_RESPONSE, PRIVACY_RESPONSE, PrefixParser},
     settings::Settings,
 };
+use cappy_dj::{AudioCache, DjService};
 use serenity::{
     Client,
     all::{Context, CreateAttachment, EditProfile, EventHandler, GatewayIntents, Message, Ready},
@@ -64,10 +72,17 @@ impl EventHandler for Handler {
                 | CommandName::Queue
                 | CommandName::Skip
                 | CommandName::Stop
+                | CommandName::Clear
                 | CommandName::Now
                 | CommandName::Pause
                 | CommandName::Resume
                 | CommandName::Leave
+                | CommandName::Volume
+                | CommandName::Voice
+                | CommandName::Personality
+                | CommandName::Talk
+                | CommandName::Shutup
+                | CommandName::Intro
         ) {
             let guild_id = message.guild_id.expect("guild checked above");
             let guild_lock = {
@@ -145,10 +160,19 @@ async fn main() -> Result<()> {
     info!(
         lavalink_host = %settings.lavalink.host,
         lavalink_port = settings.lavalink.port,
-        "Lavalink configured; playback integration is deferred to milestone 1"
+        "Lavalink configured"
     );
 
-    let playback = playback::PlaybackService::connect(&settings, database.clone()).await;
+    let audio_base = std::env::var("CAPPY_AUDIO_PUBLIC_BASE_URL").unwrap_or_else(|_| {
+        if settings.lavalink.host == "lavalink" {
+            "http://bot:8080".to_owned()
+        } else {
+            "http://127.0.0.1:8080".to_owned()
+        }
+    });
+    let dj = DjService::from_env(audio_base);
+    start_audio_server(dj.audio_cache()).await?;
+    let playback = playback::PlaybackService::connect(&settings, database.clone(), dj).await;
 
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MESSAGES
@@ -171,6 +195,37 @@ async fn main() -> Result<()> {
         return Err(error.into());
     }
     Ok(())
+}
+
+async fn start_audio_server(cache: AudioCache) -> Result<()> {
+    let app = Router::new()
+        .route("/audio/{key}", get(cached_audio))
+        .with_state(cache);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+        .await
+        .context("could not bind internal DJ audio server")?;
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, app).await {
+            error!(error = %error, "DJ audio server stopped");
+        }
+    });
+    Ok(())
+}
+
+async fn cached_audio(State(cache): State<AudioCache>, Path(path): Path<String>) -> Response<Body> {
+    let key = path.strip_suffix(".mp3").unwrap_or(&path);
+    match cache.get(key).await {
+        Some(audio) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, audio.content_type)
+            .header(header::CACHE_CONTROL, "private, max-age=86400")
+            .body(Body::from(audio.bytes))
+            .expect("static audio response"),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .expect("static not-found response"),
+    }
 }
 
 fn avatar_update_path() -> Option<PathBuf> {
