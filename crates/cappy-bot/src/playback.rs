@@ -324,7 +324,7 @@ impl PlaybackService {
         }
 
         let query = if provider == MusicProvider::Search {
-            format!("ytsearch:{input}")
+            playback_search_query(input)
         } else {
             input.to_owned()
         };
@@ -668,7 +668,7 @@ impl PlaybackService {
             self.search_candidates(
                 guild_id,
                 &format!(
-                    "ytsearch:{} {}{}",
+                    "ytsearch:{} {}{} official audio",
                     metadata.info.author, metadata.info.title, version_query
                 ),
             )
@@ -2406,6 +2406,14 @@ fn validate_vibe(input: &str) -> Result<String, PlaybackError> {
     Ok(value.to_owned())
 }
 
+fn playback_search_query(input: &str) -> String {
+    let version = match infer_content_version(input) {
+        ContentVersion::Unknown => " explicit",
+        ContentVersion::Explicit | ContentVersion::Clean => "",
+    };
+    format!("ytsearch:{input}{version} official audio")
+}
+
 fn format_now_playing(player: &lavalink_rs::model::player::Player) -> String {
     let Some(track) = &player.track else {
         return "Nothing is playing.".to_owned();
@@ -2708,6 +2716,18 @@ mod tests {
         assert_eq!(
             validate_input("Burial Archangel").unwrap(),
             "Burial Archangel"
+        );
+    }
+
+    #[test]
+    fn text_search_prefers_explicit_official_audio_unless_clean_is_requested() {
+        assert_eq!(
+            playback_search_query("Kendrick Lamar DNA"),
+            "ytsearch:Kendrick Lamar DNA explicit official audio"
+        );
+        assert_eq!(
+            playback_search_query("Kendrick Lamar DNA clean"),
+            "ytsearch:Kendrick Lamar DNA clean official audio"
         );
     }
 

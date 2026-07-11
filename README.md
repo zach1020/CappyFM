@@ -28,11 +28,12 @@ To start both services:
 ```
 
 The launcher starts Docker Desktop on macOS when needed, builds CappyFM, and
-runs the bot and Lavalink in the background. Use `./run status`, `./run logs`,
-`./run restart`, or `./run stop` for routine local operation.
+runs the bot and Lavalink in the background. Use `./run build` to rebuild the
+images without starting services, or `./run status`, `./run logs`,
+`./run restart`, and `./run stop` for routine local operation.
 
 On Windows, use `run.cmd` instead. It can also start Docker Desktop and accepts
-the same `status`, `logs`, `restart`, and `stop` commands.
+the same `build`, `status`, `logs`, `restart`, and `stop` commands.
 
 Join a voice channel, then try `cap!play Burial Archangel`. You can also queue YouTube, SoundCloud, Spotify, and Apple Music links. Spotify and Apple Music are metadata sources and are honestly labeled when matched to YouTube playback. Use `cap!queue`, `cap!requested`, `cap!now`, `cap!remove`, `cap!move`, `cap!shuffle`, `cap!pause`, `cap!resume`, `cap!skip`, `cap!clear`, `cap!stop`, and `cap!leave` for playback control. DJ segments remain attached to their songs during queue edits.
 

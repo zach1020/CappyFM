@@ -100,6 +100,13 @@ case "$action" in
     docker compose up -d --build --force-recreate
     docker compose ps
     ;;
+  build)
+    ensure_docker
+    ensure_environment
+    echo "CappyFM: building the bot and Lavalink images..."
+    docker compose build
+    echo "CappyFM: build complete. Run './run start' when you are ready."
+    ;;
   stop)
     ensure_docker
     docker compose down
@@ -136,6 +143,6 @@ case "$action" in
     apple_music_status
     ;;
   *)
-    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status|spotify-login|spotify-status|apple-music-status]"
+    die "unknown command '$action'. Use: ./run [start|restart|build|stop|logs|status|spotify-login|spotify-status|apple-music-status]"
     ;;
 esac

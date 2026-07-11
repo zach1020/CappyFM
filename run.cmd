@@ -10,6 +10,7 @@ if errorlevel 1 exit /b 1
 
 if /I "%ACTION%"=="start" goto start
 if /I "%ACTION%"=="restart" goto restart
+if /I "%ACTION%"=="build" goto build
 if /I "%ACTION%"=="stop" goto stop
 if /I "%ACTION%"=="logs" goto logs
 if /I "%ACTION%"=="status" goto status
@@ -18,7 +19,7 @@ if /I "%ACTION%"=="spotify-status" goto spotify_status
 if /I "%ACTION%"=="apple-music-status" goto apple_music_status
 if /I "%ACTION%"=="apple-status" goto apple_music_status
 
-echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login^|spotify-status^|apple-music-status] 1>&2
+echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|build^|stop^|logs^|status^|spotify-login^|spotify-status^|apple-music-status] 1>&2
 exit /b 1
 
 :start
@@ -43,6 +44,15 @@ echo CappyFM: rebuilding and restarting...
 docker compose up -d --build --force-recreate
 if errorlevel 1 exit /b 1
 docker compose ps
+exit /b 0
+
+:build
+call :ensure_environment
+if errorlevel 1 exit /b 1
+echo CappyFM: building the bot and Lavalink images...
+docker compose build
+if errorlevel 1 exit /b 1
+echo CappyFM: build complete. Run "run.cmd start" when you are ready.
 exit /b 0
 
 :stop

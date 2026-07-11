@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt,
     str::FromStr,
     sync::Arc,
@@ -16,6 +16,7 @@ use tracing::warn;
 
 const MIN_SCRIPT_WORDS: usize = 70;
 const MAX_SCRIPT_WORDS: usize = 110;
+const MAX_CACHED_TTS_SEGMENTS: usize = 64;
 const DJ_WRITER_INSTRUCTIONS: &str = "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, music history, scene lore, production, genre context, or a playful music-related tangent. Artist lore is a priority: in many, but not every, segment, include one memorable detail about the supplied artist, such as an origin story, formative influence, unusual creative habit, collaboration, scene connection, career turn, recording anecdote, or well-known legend. Prefer this human and historical texture over merely summarizing the track's musical qualities. You may draw on unofficial sources, common music lore, rumors, informed inference, and your own critical interpretation. Clearly introduce uncertain, disputed, or apocryphal lore with language such as 'People say,' 'Legend has it,' 'The story goes,' or 'According to music-lore folklore,' rather than presenting it as confirmed reporting. Never fabricate a precise date, quotation, award, chart position, sales number, or named personal event. A little harmless imprecision is acceptable when the result is insightful or funny. Never invent or repeat serious allegations, private personal details, medical claims, criminal claims, or claims targeting protected traits. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. For personality roast, roast the supplied song every time with sharp, playful music criticism; never target protected traits or the listener. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,16 +382,32 @@ impl DjWriter for OpenAiWriter {
     }
 }
 
+#[derive(Default)]
+struct AudioCacheState {
+    entries: HashMap<String, TtsAudio>,
+    insertion_order: VecDeque<String>,
+}
+
 #[derive(Clone, Default)]
-pub struct AudioCache(Arc<RwLock<HashMap<String, TtsAudio>>>);
+pub struct AudioCache(Arc<RwLock<AudioCacheState>>);
 
 impl AudioCache {
     pub async fn get(&self, key: &str) -> Option<TtsAudio> {
-        self.0.read().await.get(key).cloned()
+        self.0.read().await.entries.get(key).cloned()
     }
 
     async fn insert(&self, key: String, audio: TtsAudio) {
-        self.0.write().await.insert(key, audio);
+        let mut cache = self.0.write().await;
+        if !cache.entries.contains_key(&key) {
+            cache.insertion_order.push_back(key.clone());
+        }
+        cache.entries.insert(key, audio);
+        while cache.entries.len() > MAX_CACHED_TTS_SEGMENTS {
+            let Some(expired) = cache.insertion_order.pop_front() else {
+                break;
+            };
+            cache.entries.remove(&expired);
+        }
     }
 }
 
@@ -773,6 +790,29 @@ mod tests {
         assert_eq!(
             service.settings(1).await.personality,
             PersonalityLevel::Quirky
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_cache_recycles_old_segments() {
+        let cache = AudioCache::default();
+        for index in 0..=MAX_CACHED_TTS_SEGMENTS {
+            cache
+                .insert(
+                    index.to_string(),
+                    TtsAudio {
+                        bytes: vec![index as u8],
+                        content_type: "audio/mpeg",
+                    },
+                )
+                .await;
+        }
+        assert!(cache.get("0").await.is_none());
+        assert!(
+            cache
+                .get(&MAX_CACHED_TTS_SEGMENTS.to_string())
+                .await
+                .is_some()
         );
     }
 
