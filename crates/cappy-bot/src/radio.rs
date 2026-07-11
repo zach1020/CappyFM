@@ -20,6 +20,8 @@ use tokio::time::{Duration, Instant, sleep, timeout, timeout_at};
 use tracing::warn;
 
 const RADIO_QUEUE_TARGET: usize = 4;
+const MIN_RADIO_TRACK_MS: u64 = 45_000;
+const MAX_RADIO_TRACK_MS: u64 = 15 * 60_000;
 
 #[derive(Debug, Clone)]
 pub struct RadioSession {
@@ -212,7 +214,7 @@ impl RadioService {
             .flatten());
         let query = discovery_query(vibe, flavor, taste_artist.as_deref());
         let loaded = self
-            .load_tracks_with_retry(client, guild_id, &format!("ytsearch:{query}"))
+            .load_tracks_with_retry(client, guild_id, &format!("ytmsearch:{query}"))
             .await?;
         let candidates = match loaded.data {
             Some(TrackLoadData::Search(tracks)) => tracks,
@@ -257,6 +259,7 @@ impl RadioService {
         for mut track in candidates {
             if added >= target
                 || track.info.is_stream
+                || !is_likely_music_track(&track)
                 || !avoid.insert(track.info.identifier.clone())
             {
                 continue;
@@ -827,6 +830,32 @@ fn is_radio_track(track: &TrackData) -> bool {
         .unwrap_or(false)
 }
 
+fn is_likely_music_track(track: &TrackData) -> bool {
+    if !(MIN_RADIO_TRACK_MS..=MAX_RADIO_TRACK_MS).contains(&track.info.length) {
+        return false;
+    }
+    let text = format!(
+        " {} ",
+        normalize(&format!("{} {}", track.info.title, track.info.author))
+    );
+    let spoken_markers = [
+        " review ",
+        " reaction ",
+        " reacts ",
+        " interview ",
+        " podcast ",
+        " video essay ",
+        " documentary ",
+        " explained ",
+        " breakdown ",
+        " tutorial ",
+        " behind the scenes ",
+        " making of ",
+        " commentary ",
+    ];
+    !spoken_markers.iter().any(|marker| text.contains(marker))
+}
+
 fn discord_safe(value: &str) -> String {
     value
         .replace('`', "'")
@@ -877,6 +906,34 @@ mod tests {
             "late-night underground hidden gem music"
         );
         assert!(recommendation_reason("cozy", None, Some("Burial")).contains("Burial"));
+    }
+
+    #[test]
+    fn radio_rejects_obvious_spoken_video_results() {
+        let mut music = TrackData::default();
+        music.info.title = "Archangel (Official Audio)".to_owned();
+        music.info.author = "Burial".to_owned();
+        music.info.length = 237_000;
+        assert!(is_likely_music_track(&music));
+
+        let mut review = music.clone();
+        review.info.title = "Burial Archangel - Album Review".to_owned();
+        assert!(!is_likely_music_track(&review));
+
+        let mut podcast = music.clone();
+        podcast.info.author = "The Music Podcast".to_owned();
+        assert!(!is_likely_music_track(&podcast));
+    }
+
+    #[test]
+    fn radio_rejects_non_song_durations() {
+        let mut track = TrackData::default();
+        track.info.title = "A video about music".to_owned();
+        track.info.author = "Channel".to_owned();
+        track.info.length = 30_000;
+        assert!(!is_likely_music_track(&track));
+        track.info.length = 20 * 60_000;
+        assert!(!is_likely_music_track(&track));
     }
 
     #[test]

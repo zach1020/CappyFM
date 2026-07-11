@@ -65,6 +65,8 @@ pub enum PlaybackError {
     SpotifyAuthorizationRequired,
     #[error("Spotify playlist request failed: {0}")]
     SpotifyPlaylist(String),
+    #[error("Apple Music catalog authorization is required")]
+    AppleMusicAuthorizationRequired,
     #[error("no confident playable match was found")]
     LowConfidence,
     #[error("no playable track was found")]
@@ -97,6 +99,7 @@ impl PlaybackError {
             Self::ProviderUnavailable => "provider_unavailable",
             Self::SpotifyAuthorizationRequired => "spotify_authorization_required",
             Self::SpotifyPlaylist(_) => "spotify_playlist",
+            Self::AppleMusicAuthorizationRequired => "apple_music_authorization_required",
             Self::LowConfidence => "low_match_confidence",
             Self::NoTracks => "no_tracks",
             Self::Livestream => "livestream_rejected",
@@ -130,6 +133,9 @@ impl PlaybackError {
             }
             Self::SpotifyPlaylist(_) => {
                 "Spotify couldn't read that playlist. It must be owned by—or shared collaboratively with—the account authorized through `./run spotify-login`."
+            }
+            Self::AppleMusicAuthorizationRequired => {
+                "Apple Music link support needs `APPLE_MUSIC_API_TOKEN` in `.env`. Add an Apple Music developer token, restart CappyFM, and try the link again."
             }
             Self::LowConfidence => {
                 "I found the track metadata, but I couldn't locate a confident playable match. Try a YouTube or SoundCloud link."
@@ -321,6 +327,13 @@ impl PlaybackService {
         let input = validate_input(arguments)?;
         let command_id = message.id.get();
         let provider = classify_input(input).map_err(|_| PlaybackError::UnsupportedUrl)?;
+        if provider == MusicProvider::AppleMusic
+            && !std::env::var("APPLE_MUSIC_API_TOKEN")
+                .ok()
+                .is_some_and(|token| !token.trim().is_empty())
+        {
+            return Err(PlaybackError::AppleMusicAuthorizationRequired);
+        }
         self.ensure_joined(context, message, guild_id).await?;
         let player = self
             .lavalink
