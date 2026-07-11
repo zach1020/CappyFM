@@ -30,7 +30,7 @@ use tokio::{
 
 use crate::{
     radio::{self, RadioService},
-    spotify::{self, SpotifyClient, SpotifyError},
+    spotify::{self, SpotifyClient},
 };
 
 const MAX_ARGUMENT_LENGTH: usize = 500;
@@ -61,12 +61,6 @@ pub enum PlaybackError {
     UnsupportedUrl,
     #[error("the metadata provider is not configured or unavailable")]
     ProviderUnavailable,
-    #[error("Spotify playlist authorization is required")]
-    SpotifyAuthorizationRequired,
-    #[error("Spotify playlist request failed: {0}")]
-    SpotifyPlaylist(String),
-    #[error("Apple Music catalog authorization is required")]
-    AppleMusicAuthorizationRequired,
     #[error("no confident playable match was found")]
     LowConfidence,
     #[error("no playable track was found")]
@@ -97,9 +91,6 @@ impl PlaybackError {
             Self::ArgumentTooLong => "argument_too_long",
             Self::UnsupportedUrl => "unsupported_url",
             Self::ProviderUnavailable => "provider_unavailable",
-            Self::SpotifyAuthorizationRequired => "spotify_authorization_required",
-            Self::SpotifyPlaylist(_) => "spotify_playlist",
-            Self::AppleMusicAuthorizationRequired => "apple_music_authorization_required",
             Self::LowConfidence => "low_match_confidence",
             Self::NoTracks => "no_tracks",
             Self::Livestream => "livestream_rejected",
@@ -127,15 +118,6 @@ impl PlaybackError {
             }
             Self::ProviderUnavailable => {
                 "I recognize that link, but its metadata provider isn't configured or available. Check the provider credentials in `.env`."
-            }
-            Self::SpotifyAuthorizationRequired => {
-                "Spotify needs a one-time playlist login. Run `./run spotify-login` on the CappyFM computer, then try again."
-            }
-            Self::SpotifyPlaylist(_) => {
-                "Spotify couldn't read that playlist. It must be owned by—or shared collaboratively with—the account authorized through `./run spotify-login`."
-            }
-            Self::AppleMusicAuthorizationRequired => {
-                "Apple Music link support needs `APPLE_MUSIC_API_TOKEN` in `.env`. Add an Apple Music developer token, restart CappyFM, and try the link again."
             }
             Self::LowConfidence => {
                 "I found the track metadata, but I couldn't locate a confident playable match. Try a YouTube or SoundCloud link."
@@ -327,13 +309,6 @@ impl PlaybackService {
         let input = validate_input(arguments)?;
         let command_id = message.id.get();
         let provider = classify_input(input).map_err(|_| PlaybackError::UnsupportedUrl)?;
-        if provider == MusicProvider::AppleMusic
-            && !std::env::var("APPLE_MUSIC_API_TOKEN")
-                .ok()
-                .is_some_and(|token| !token.trim().is_empty())
-        {
-            return Err(PlaybackError::AppleMusicAuthorizationRequired);
-        }
         self.ensure_joined(context, message, guild_id).await?;
         let player = self
             .lavalink
@@ -353,23 +328,31 @@ impl PlaybackService {
         } else {
             input.to_owned()
         };
-        let (metadata_tracks, playlist_name) =
-            if provider == MusicProvider::Spotify && spotify::is_playlist_url(input) {
-                let spotify = self
-                    .spotify
-                    .as_ref()
-                    .ok_or(PlaybackError::SpotifyAuthorizationRequired)?;
-                let playlist = spotify
-                    .load_owned_playlist(input, MAX_PLAYLIST_ITEMS)
-                    .await
-                    .map_err(map_spotify_error)?;
-                if playlist.tracks.is_empty() {
-                    return Err(PlaybackError::NoTracks);
+        let (metadata_tracks, playlist_name) = if provider == MusicProvider::Spotify
+            && spotify::is_playlist_url(input)
+        {
+            match self.spotify.as_ref() {
+                Some(spotify) => match spotify.load_owned_playlist(input, MAX_PLAYLIST_ITEMS).await
+                {
+                    Ok(playlist) if !playlist.tracks.is_empty() => {
+                        (playlist.tracks, Some(playlist.name))
+                    }
+                    Ok(_) | Err(_) => {
+                        // Authorized access can reject playlists that are not owned or
+                        // collaborative. Try catalog extraction, then rebuild the recovered
+                        // track list from YouTube below.
+                        self.load_metadata(guild_id, input, provider).await?
+                    }
+                },
+                None => {
+                    // A saved user login is optional for public playlists when LavaSrc can
+                    // extract their metadata using the configured app credentials.
+                    self.load_metadata(guild_id, input, provider).await?
                 }
-                (playlist.tracks, Some(playlist.name))
-            } else {
-                self.load_metadata(guild_id, &query, provider).await?
-            };
+            }
+        } else {
+            self.load_metadata(guild_id, &query, provider).await?
+        };
         let is_playlist = playlist_name.is_some();
         let mut tracks = Vec::new();
         let mut confidences = Vec::new();
@@ -2421,13 +2404,6 @@ fn validate_vibe(input: &str) -> Result<String, PlaybackError> {
         return Err(PlaybackError::InvalidSetting);
     }
     Ok(value.to_owned())
-}
-
-fn map_spotify_error(error: SpotifyError) -> PlaybackError {
-    match error {
-        SpotifyError::AuthorizationExpired => PlaybackError::SpotifyAuthorizationRequired,
-        other => PlaybackError::SpotifyPlaylist(other.to_string()),
-    }
 }
 
 fn format_now_playing(player: &lavalink_rs::model::player::Player) -> String {

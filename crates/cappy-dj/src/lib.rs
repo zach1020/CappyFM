@@ -16,6 +16,7 @@ use tracing::warn;
 
 const MIN_SCRIPT_WORDS: usize = 70;
 const MAX_SCRIPT_WORDS: usize = 110;
+const DJ_WRITER_INSTRUCTIONS: &str = "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, music history, scene lore, production, genre context, or a playful music-related tangent. Artist lore is a priority: in many, but not every, segment, include one memorable detail about the supplied artist, such as an origin story, formative influence, unusual creative habit, collaboration, scene connection, career turn, recording anecdote, or well-known legend. Prefer this human and historical texture over merely summarizing the track's musical qualities. You may draw on unofficial sources, common music lore, rumors, informed inference, and your own critical interpretation. Clearly introduce uncertain, disputed, or apocryphal lore with language such as 'People say,' 'Legend has it,' 'The story goes,' or 'According to music-lore folklore,' rather than presenting it as confirmed reporting. Never fabricate a precise date, quotation, award, chart position, sales number, or named personal event. A little harmless imprecision is acceptable when the result is insightful or funny. Never invent or repeat serious allegations, private personal details, medical claims, criminal claims, or claims targeting protected traits. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. For personality roast, roast the supplied song every time with sharp, playful music criticism; never target protected traits or the listener. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -355,7 +356,7 @@ impl DjWriter for OpenAiWriter {
             .bearer_auth(&self.api_key)
             .json(&serde_json::json!({
                 "model": self.model,
-                "instructions": "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, music history, scene lore, production, genre context, or a playful music-related tangent. You may draw on unofficial sources, common music lore, rumors, informed inference, and your own critical interpretation. Make uncertain or apocryphal material sound appropriately playful or qualified instead of presenting it as confirmed reporting. A little harmless inaccuracy is acceptable when the result is insightful or funny. Never invent or repeat serious allegations, private personal details, medical claims, criminal claims, or claims targeting protected traits. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. For personality roast, roast the supplied song every time with sharp, playful music criticism; never target protected traits or the listener. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.",
+                "instructions": DJ_WRITER_INSTRUCTIONS,
                 "input": prompt,
                 "max_output_tokens": 240
             }))
@@ -781,6 +782,15 @@ mod tests {
             .map(|sequence| TalkFrequency::Normal.gap(sequence))
             .collect();
         assert_eq!(gaps, vec![2, 3, 4, 2, 3, 4]);
+    }
+
+    #[test]
+    fn ai_writer_prioritizes_artist_lore_and_qualifies_uncertain_stories() {
+        assert!(DJ_WRITER_INSTRUCTIONS.contains("Artist lore is a priority"));
+        assert!(DJ_WRITER_INSTRUCTIONS.contains("many, but not every, segment"));
+        assert!(DJ_WRITER_INSTRUCTIONS.contains("People say,"));
+        assert!(DJ_WRITER_INSTRUCTIONS.contains("Legend has it,"));
+        assert!(DJ_WRITER_INSTRUCTIONS.contains("Never fabricate a precise date"));
     }
 
     #[tokio::test]
