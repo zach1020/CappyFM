@@ -213,14 +213,30 @@ impl RadioService {
             .ok()
             .flatten());
         let query = discovery_query(vibe, flavor, taste_artist.as_deref());
-        let loaded = self
-            .load_tracks_with_retry(client, guild_id, &format!("ytmsearch:{query}"))
-            .await?;
-        let candidates = match loaded.data {
-            Some(TrackLoadData::Search(tracks)) => tracks,
-            Some(TrackLoadData::Track(track)) => vec![track],
-            _ => Vec::new(),
-        };
+        let mut candidates = self
+            .radio_search_candidates(client, guild_id, &format!("ytmsearch:{query}"))
+            .await
+            .unwrap_or_else(|error| {
+                warn!(guild_id = %guild_id, error = %error, "YouTube Music search unavailable; falling back to filtered YouTube search");
+                Vec::new()
+            });
+        let likely_music_count = candidates
+            .iter()
+            .filter(|track| is_likely_music_track(track))
+            .count();
+        if likely_music_count < target {
+            let fallback_query = format!("ytsearch:{query} official audio song");
+            match self
+                .radio_search_candidates(client, guild_id, &fallback_query)
+                .await
+            {
+                Ok(fallback) => candidates.extend(fallback),
+                Err(error) if candidates.is_empty() => return Err(error),
+                Err(error) => {
+                    warn!(guild_id = %guild_id, error = %error, "filtered YouTube radio fallback search failed")
+                }
+            }
+        }
 
         let mut avoid = HashSet::new();
         let current = player_data(client, guild_id).await?;
@@ -352,6 +368,21 @@ impl RadioService {
         .await
         .ok()
         .flatten()
+    }
+
+    async fn radio_search_candidates(
+        &self,
+        client: &LavalinkClient,
+        guild_id: GuildId,
+        query: &str,
+    ) -> Result<Vec<TrackData>, String> {
+        let loaded = self.load_tracks_with_retry(client, guild_id, query).await?;
+        match loaded.data {
+            Some(TrackLoadData::Search(tracks)) => Ok(tracks),
+            Some(TrackLoadData::Track(track)) => Ok(vec![track]),
+            Some(TrackLoadData::Error(error)) => Err(error.message),
+            _ => Ok(Vec::new()),
+        }
     }
 
     async fn load_tracks_with_retry(
