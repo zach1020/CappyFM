@@ -1,0 +1,12 @@
+[prefixes]
+values = ["cappy!", "cap!"]
+
+[privacy]
+ignore_non_commands = true
+store_command_bodies = false
+store_search_queries = false
+
+[lavalink]
+host = "localhost"
+port = 2333
+

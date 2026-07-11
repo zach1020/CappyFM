@@ -1,0 +1,46 @@
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Local CappyFM configuration overrides
+/config/cappyfm.local.toml
+/config/*.secret.toml
+
+# Rust build output and tooling
+/target/
+*.profraw
+lcov.info
+/coverage/
+
+# Runtime data, caches, and downloaded Lavalink plugins
+/data/*
+!/data/.gitkeep
+/plugins/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs and process files
+*.log
+*.pid
+
+# Editors and operating-system metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local development tools
+.direnv/
+.envrc

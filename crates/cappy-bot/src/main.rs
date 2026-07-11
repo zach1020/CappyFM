@@ -1,0 +1,126 @@
+use std::{path::PathBuf, sync::Arc};
+
+use anyhow::{Context as _, Result};
+use cappy_core::{
+    command::{CommandName, HELP_RESPONSE, PRIVACY_RESPONSE, PrefixParser},
+    settings::Settings,
+};
+use serenity::{
+    Client,
+    all::{Context, CreateAttachment, EditProfile, EventHandler, GatewayIntents, Message, Ready},
+    async_trait,
+};
+use sqlx::sqlite::SqlitePoolOptions;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
+
+struct Handler {
+    parser: Arc<PrefixParser>,
+}
+
+#[async_trait]
+impl EventHandler for Handler {
+    async fn message(&self, context: Context, message: Message) {
+        // Privacy boundary: reject bots and DMs before parsing or logging content.
+        if message.author.bot || message.guild_id.is_none() {
+            return;
+        }
+
+        // Do not move logging above this gate. Ordinary chat must leave no content trace.
+        let Some(command) = self.parser.parse(&message.content) else {
+            return;
+        };
+
+        info!(
+            guild_id = %message.guild_id.expect("guild checked above"),
+            channel_id = %message.channel_id,
+            user_id = %message.author.id,
+            command = %command.name,
+            "command received"
+        );
+
+        let response = match command.name {
+            CommandName::Help => Some(HELP_RESPONSE),
+            CommandName::Privacy => Some(PRIVACY_RESPONSE),
+            CommandName::Unknown => None,
+        };
+
+        if let Some(response) = response
+            && let Err(error) = message.channel_id.say(&context.http, response).await
+        {
+            warn!(error = %error, "failed to send command response");
+        }
+    }
+
+    async fn ready(&self, _context: Context, ready: Ready) {
+        info!(bot_user_id = %ready.user.id, "CappyFM connected and healthy");
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .json()
+        .init();
+
+    let config_path = std::env::var_os("CAPPY_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("config/cappyfm.toml"));
+    let settings = Settings::load(config_path).context("invalid CappyFM configuration")?;
+
+    if let Some(avatar_path) = avatar_update_path() {
+        let avatar = CreateAttachment::path(&avatar_path)
+            .await
+            .with_context(|| format!("could not read avatar at {}", avatar_path.display()))?;
+        serenity::http::Http::new(&settings.discord.token)
+            .edit_profile(&EditProfile::new().avatar(&avatar))
+            .await
+            .context("Discord rejected the avatar update")?;
+        info!(avatar_path = %avatar_path.display(), "Discord bot avatar updated");
+        return Ok(());
+    }
+
+    let database = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&settings.database.url)
+        .await
+        .context("could not connect to SQLite")?;
+    sqlx::migrate!("../../migrations")
+        .run(&database)
+        .await
+        .context("database migration failed")?;
+    info!("database is healthy and migrations are current");
+
+    info!(
+        lavalink_host = %settings.lavalink.host,
+        lavalink_port = settings.lavalink.port,
+        "Lavalink configured; playback integration is deferred to milestone 1"
+    );
+
+    let intents =
+        GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+    let handler = Handler {
+        parser: Arc::new(PrefixParser::new(settings.prefixes.values)),
+    };
+    let mut client = Client::builder(&settings.discord.token, intents)
+        .application_id(settings.discord.application_id.into())
+        .event_handler(handler)
+        .await
+        .context("could not construct Discord client")?;
+
+    if let Err(error) = client.start().await {
+        error!(error = %error, "Discord client stopped");
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn avatar_update_path() -> Option<PathBuf> {
+    let mut arguments = std::env::args_os().skip(1);
+    match arguments.next()?.to_str() {
+        Some("--set-avatar") => arguments.next().map(PathBuf::from),
+        _ => None,
+    }
+}

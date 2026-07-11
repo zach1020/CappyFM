@@ -1,0 +1,12 @@
+[package]
+name = "cappy-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+config.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+

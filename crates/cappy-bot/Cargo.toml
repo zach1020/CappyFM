@@ -1,0 +1,18 @@
+[package]
+name = "cappy-bot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+cappy-core = { path = "../cappy-core" }
+dotenvy.workspace = true
+serenity.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+

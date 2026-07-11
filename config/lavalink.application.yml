@@ -1,0 +1,33 @@
+server:
+  port: 2333
+
+lavalink:
+  server:
+    password: "${LAVALINK_SERVER_PASSWORD:change-me}"
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: true
+      http: false
+      local: false
+    filters:
+      volume: true
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+      snapshot: false
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+

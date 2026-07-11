@@ -1,0 +1,33 @@
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4.0.8-alpine
+    restart: unless-stopped
+    environment:
+      _JAVA_OPTIONS: -Xmx512M
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-change-me}
+    volumes:
+      - ./config/lavalink.application.yml:/opt/Lavalink/application.yml:ro
+      - ./plugins:/opt/Lavalink/plugins
+    ports:
+      - "2333:2333"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--header", "Authorization: ${LAVALINK_PASSWORD:-change-me}", "http://localhost:2333/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CAPPY_CONFIG: /app/config/cappyfm.toml
+      DATABASE_URL: sqlite:///app/data/cappyfm.db?mode=rwc
+      LAVALINK_HOST: lavalink
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      lavalink:
+        condition: service_healthy
