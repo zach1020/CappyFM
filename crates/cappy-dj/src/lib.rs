@@ -463,6 +463,14 @@ impl DjService {
         self.session_mut(guild_id).await.frequency = frequency;
     }
 
+    pub async fn has_session(&self, guild_id: u64) -> bool {
+        self.sessions.read().await.contains_key(&guild_id)
+    }
+
+    pub async fn reset_session(&self, guild_id: u64) {
+        self.sessions.write().await.remove(&guild_id);
+    }
+
     pub async fn mark_session_ended(&self, guild_id: u64) {
         let mut session = self.session_mut(guild_id).await;
         session.tracks_since_segment = 0;
@@ -746,6 +754,25 @@ mod tests {
         service.set_frequency(1, TalkFrequency::Off).await;
         assert_eq!(service.settings(1).await.frequency, TalkFrequency::Off);
         assert_eq!(service.settings(2).await.frequency, TalkFrequency::Normal);
+    }
+
+    #[tokio::test]
+    async fn personality_override_is_session_scoped_and_resettable() {
+        let service = test_service();
+        assert!(!service.has_session(1).await);
+        service.set_personality(1, PersonalityLevel::Roast).await;
+        service.set_personality(1, PersonalityLevel::Chill).await;
+        assert!(service.has_session(1).await);
+        assert_eq!(
+            service.settings(1).await.personality,
+            PersonalityLevel::Chill
+        );
+        service.reset_session(1).await;
+        assert!(!service.has_session(1).await);
+        assert_eq!(
+            service.settings(1).await.personality,
+            PersonalityLevel::Quirky
+        );
     }
 
     #[test]

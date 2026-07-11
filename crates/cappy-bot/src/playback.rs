@@ -23,7 +23,10 @@ use serenity::all::{
 };
 use sqlx::{Row, SqlitePool};
 use thiserror::Error;
-use tokio::time::{Instant, sleep, timeout, timeout_at};
+use tokio::{
+    sync::Mutex,
+    time::{Instant, sleep, timeout, timeout_at},
+};
 
 use crate::{
     radio::{self, RadioService},
@@ -43,6 +46,7 @@ pub struct PlaybackService {
     dj: DjService,
     radio: RadioService,
     spotify: Option<SpotifyClient>,
+    last_additions: Arc<Mutex<HashMap<u64, u64>>>,
 }
 
 #[derive(Debug, Error)]
@@ -171,6 +175,7 @@ impl PlaybackService {
             dj,
             radio,
             spotify: SpotifyClient::from_environment(),
+            last_additions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -208,6 +213,7 @@ impl PlaybackService {
             CommandName::Remove => self.remove(context, message, guild_id, arguments).await,
             CommandName::Move => self.move_track(context, message, guild_id, arguments).await,
             CommandName::Shuffle => self.shuffle(context, message, guild_id).await,
+            CommandName::Undo => self.undo(context, message, guild_id).await,
             CommandName::Requested => self.requested(context, message, guild_id).await,
             CommandName::Now => self.now(context, message, guild_id).await,
             CommandName::Pause => self.pause(context, message, guild_id, true).await,
@@ -278,7 +284,7 @@ impl PlaybackService {
                 .await
                 .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
         }
-        if let Some(row) = sqlx::query(
+        if !self.dj.has_session(guild_id.get()).await && let Some(row) = sqlx::query(
             "SELECT default_voice, default_personality, default_talk_frequency FROM guild_settings WHERE guild_id=?",
         )
         .bind(guild_id.get().to_string())
@@ -313,6 +319,7 @@ impl PlaybackService {
         arguments: &str,
     ) -> Result<(), PlaybackError> {
         let input = validate_input(arguments)?;
+        let command_id = message.id.get();
         let provider = classify_input(input).map_err(|_| PlaybackError::UnsupportedUrl)?;
         self.ensure_joined(context, message, guild_id).await?;
         let player = self
@@ -386,6 +393,7 @@ impl PlaybackService {
                     &metadata.info.title,
                     track_metadata(&metadata).album,
                 )),
+                "add_command_id": command_id,
             }));
             self.persist_resolution(
                 &metadata,
@@ -460,6 +468,7 @@ impl PlaybackService {
                         intro_track.user_data = Some(serde_json::json!({
                             "dj_segment": true,
                             "script": segment.script,
+                            "add_command_id": command_id,
                         }));
                         interleaved.push(TrackInQueue::from(intro_track));
                     }
@@ -552,6 +561,11 @@ impl PlaybackService {
         queue
             .replace(fair_queue.into_iter().flatten().collect())
             .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+
+        self.last_additions
+            .lock()
+            .await
+            .insert(guild_id.get(), command_id);
 
         if player_before.track.is_none() {
             player
@@ -906,6 +920,81 @@ impl PlaybackService {
             message,
             context,
             format!("Removed `{title}` by `{artist}`."),
+        )
+        .await
+    }
+
+    async fn undo(
+        &self,
+        context: &Context,
+        message: &Message,
+        guild_id: GuildId,
+    ) -> Result<(), PlaybackError> {
+        requester_voice_channel(context, message, guild_id)?;
+        let Some(command_id) = self
+            .last_additions
+            .lock()
+            .await
+            .get(&guild_id.get())
+            .copied()
+        else {
+            return say(
+                message,
+                context,
+                "There isn't a recent play command to undo.".to_owned(),
+            )
+            .await;
+        };
+        let Some(player) = self.lavalink.get_player_context(guild_id) else {
+            return say(
+                message,
+                context,
+                "There aren't any songs from that command left to undo.".to_owned(),
+            )
+            .await;
+        };
+        let queue = player.get_queue();
+        let blocks = queue_blocks(
+            queue
+                .get_queue()
+                .await
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?,
+        );
+        let (kept, removed) = remove_command_blocks(blocks, command_id);
+        let removed_count = removed.len();
+        queue
+            .replace(kept.into_iter().flatten().collect())
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+
+        let current = player
+            .get_player()
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?
+            .track;
+        let stopped_current = current
+            .as_ref()
+            .is_some_and(|track| add_command_id(&track.user_data) == Some(command_id));
+        if stopped_current {
+            player
+                .skip()
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        }
+        if removed_count == 0 && !stopped_current {
+            return say(
+                message,
+                context,
+                "There aren't any songs from that command left to undo.".to_owned(),
+            )
+            .await;
+        }
+        self.last_additions.lock().await.remove(&guild_id.get());
+        let current_song_removed =
+            stopped_current && current.as_ref().is_some_and(|track| !is_dj_track(track));
+        let total = removed_count + usize::from(current_song_removed);
+        say(
+            message,
+            context,
+            format!("Undid the last play command and removed {total} song(s)."),
         )
         .await
     }
@@ -2255,6 +2344,7 @@ impl PlaybackService {
                 .await
                 .map_err(|error| PlaybackError::Voice(error.to_string()))?;
         }
+        self.dj.reset_session(guild_id.get()).await;
         say(
             message,
             context,
@@ -2535,6 +2625,19 @@ fn is_radio_track(track: &TrackData) -> bool {
         .unwrap_or(false)
 }
 
+fn add_command_id(data: &Option<serde_json::Value>) -> Option<u64> {
+    data.as_ref()?.get("add_command_id")?.as_u64()
+}
+
+fn remove_command_blocks(
+    blocks: Vec<Vec<TrackInQueue>>,
+    command_id: u64,
+) -> (Vec<Vec<TrackInQueue>>, Vec<Vec<TrackInQueue>>) {
+    blocks
+        .into_iter()
+        .partition(|block| add_command_id(&block_music(block).user_data) != Some(command_id))
+}
+
 fn is_radio_queue_item(track: &TrackData) -> bool {
     if is_radio_track(track) {
         return true;
@@ -2603,6 +2706,12 @@ mod tests {
             "dj_segment": dj,
         }));
         TrackInQueue::from(track)
+    }
+
+    fn command_track(title: &str, command_id: u64) -> TrackInQueue {
+        let mut track = queued_track(title, Some(1), false);
+        track.track.user_data.as_mut().unwrap()["add_command_id"] = command_id.into();
+        track
     }
 
     #[test]
@@ -2699,6 +2808,23 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].len(), 2);
         assert_eq!(block_music(&blocks[0]).info.title, "song");
+    }
+
+    #[test]
+    fn undo_removes_every_song_from_only_the_last_add_command() {
+        let blocks = vec![
+            vec![command_track("older", 10)],
+            vec![
+                queued_track("intro", None, true),
+                command_track("new one", 20),
+            ],
+            vec![command_track("new two", 20)],
+        ];
+        let (kept, removed) = remove_command_blocks(blocks, 20);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(removed.len(), 2);
+        assert_eq!(block_music(&kept[0]).info.title, "older");
+        assert_eq!(removed[0].len(), 2);
     }
 
     #[test]

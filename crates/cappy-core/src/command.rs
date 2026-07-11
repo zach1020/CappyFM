@@ -2,7 +2,7 @@ use std::fmt;
 
 pub const PRIVACY_RESPONSE: &str = "🔒 CappyFM does not monitor Discord conversation. It immediately ignores messages that do not start with `cappy!`, `capy!`, or `cap!`. It stores only music-related activity such as requested tracks, likes, skips, session settings, and listening history. Ordinary chat is never sent to AI.";
 
-pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\n`cap!play <URL or search>` — queue music\n`cap!queue` / `cap!now` / `cap!requested` — inspect playback\n`cap!remove <position>` / `cap!move <from> <to>` / `cap!shuffle`\n`cap!pause` / `cap!resume` / `cap!skip` / `cap!clear` / `cap!stop`\n`cap!radio [vibe|off]` — continuous music radio\n`cap!vibe [description]` / `cap!surprise` / `cap!crate` / `cap!similar`\n`cap!like` / `cap!dislike` / `cap!favorites`\n`cap!why` / `cap!fact` / `cap!history` / `cap!stats`\n`cap!volume <0-100>` — shared output; use Discord User Volume for private levels\n`cap!voice [list|preset|preview preset]` — AI-generated DJ voice\n`cap!personality <chill|quirky|unhinged|roast>`\n`cap!talk <off|on|less|normal|more>` / `cap!shutup`\n`cap!settings` / `cap!health` / `cap!privacy`\n\nUse `cap!help radio`, `cap!help dj`, or `cap!help admin` for focused help. Spotify and Apple Music are metadata sources matched to YouTube playback. The `cap!`, `capy!`, and `cappy!` prefixes all work.";
+pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\n`cap!play <URL or search>` — queue music\n`cap!queue` / `cap!now` / `cap!requested` — inspect playback\n`cap!remove <position>` / `cap!move <from> <to>` / `cap!shuffle` / `cap!undo`\n`cap!pause` / `cap!resume` / `cap!skip` / `cap!clear` / `cap!stop`\n`cap!radio [vibe|off]` — continuous music radio\n`cap!vibe [description]` / `cap!surprise` / `cap!crate` / `cap!similar`\n`cap!like` / `cap!dislike` / `cap!favorites`\n`cap!why` / `cap!fact` / `cap!history` / `cap!stats`\n`cap!volume <0-100>` — shared output; use Discord User Volume for private levels\n`cap!voice [list|preset|preview preset]` — AI-generated DJ voice\n`cap!personality <chill|quirky|unhinged|roast>`\n`cap!talk <off|on|less|normal|more>` / `cap!shutup`\n`cap!settings` / `cap!health` / `cap!privacy`\n\nUse `cap!help radio`, `cap!help dj`, or `cap!help admin` for focused help. Spotify and Apple Music are metadata sources matched to YouTube playback. The `cap!`, `capy!`, and `cappy!` prefixes all work.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandName {
@@ -16,6 +16,7 @@ pub enum CommandName {
     Remove,
     Move,
     Shuffle,
+    Undo,
     Requested,
     Now,
     Pause,
@@ -59,6 +60,7 @@ impl fmt::Display for CommandName {
             Self::Remove => "remove",
             Self::Move => "move",
             Self::Shuffle => "shuffle",
+            Self::Undo => "undo",
             Self::Requested => "requested",
             Self::Now => "now",
             Self::Pause => "pause",
@@ -140,6 +142,7 @@ impl PrefixParser {
             "remove" => CommandName::Remove,
             "move" => CommandName::Move,
             "shuffle" => CommandName::Shuffle,
+            "undo" => CommandName::Undo,
             "requested" => CommandName::Requested,
             "now" | "np" => CommandName::Now,
             "pause" => CommandName::Pause,
@@ -199,6 +202,11 @@ mod tests {
             parser().parse("cap!clear").unwrap().name,
             CommandName::Clear
         );
+    }
+
+    #[test]
+    fn undo_command_is_recognized() {
+        assert_eq!(parser().parse("cap!undo").unwrap().name, CommandName::Undo);
     }
 
     #[test]
