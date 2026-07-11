@@ -1,6 +1,6 @@
 # CappyFM
 
-Privacy-first Discord music bot and capybara radio host. This repository currently implements milestone 0 plus the privacy-safe command shell: configuration, SQLite migrations, Discord connectivity, strict prefix parsing, `help`, `privacy`, and a Lavalink v4 development service.
+Privacy-first Discord music bot and capybara radio host. The current resolver milestone includes YouTube search/URL playback, SoundCloud playback, Spotify and Apple Music metadata resolution to scored YouTube matches, canonical music records, per-guild queues, and Lavalink v4 voice.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Privacy-first Discord music bot and capybara radio host. This repository current
 
 Enable **Message Content Intent** for the bot in Discord's Developer Portal. CappyFM needs it only for the requested `cap!` / `cappy!` prefix interface. The gateway handler immediately discards bot messages, DMs, and any guild message without a configured prefix. It neither logs nor stores ordinary message content.
 
-Invite the bot with the minimal permissions needed for this milestone: View Channels, Send Messages, and Read Message History. Voice permissions will be added with playback.
+Invite the bot with View Channels, Send Messages, Read Message History, Connect, Speak, and Use Voice Activity.
 
 ## Local setup
 
@@ -27,7 +27,9 @@ To start both services:
 docker compose up --build
 ```
 
-Then try `cap!help` and `cap!privacy` in a guild text channel.
+Join a voice channel, then try `cap!play Burial Archangel`. You can also queue YouTube, SoundCloud, Spotify, and Apple Music links. Spotify and Apple Music are metadata sources and are honestly labeled when matched to YouTube playback. Use `cap!queue`, `cap!now`, `cap!pause`, `cap!resume`, `cap!skip`, `cap!stop`, and `cap!leave` for playback control.
+
+For reliable Spotify and Apple Music resolution, add `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and `APPLE_MUSIC_API_TOKEN` to `.env`, then recreate Lavalink with `docker compose up -d --force-recreate lavalink`.
 
 ## Bot avatar
 
@@ -56,4 +58,4 @@ cargo test
 docker compose config
 ```
 
-Playback, queueing, source resolution, and AI/TTS are intentionally deferred to later milestones from the design document.
+Radio and AI/TTS remain intentionally deferred to later milestones from the design document.

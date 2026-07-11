@@ -16,7 +16,10 @@ lavalink:
     filters:
       volume: true
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+      snapshot: false
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
+      repository: "https://maven.lavalink.dev/releases"
       snapshot: false
 
 plugins:
@@ -25,9 +28,43 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+  lavasrc:
+    providers:
+      - "ytsearch:\"%ISRC%\""
+      - "ytsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: true
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      youtube: false
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      ytdlp: false
+    lyrics-sources:
+      spotify: false
+      deezer: false
+      youtube: false
+      yandexmusic: false
+      vkmusic: false
+    spotify:
+      clientId: "${SPOTIFY_CLIENT_ID:}"
+      clientSecret: "${SPOTIFY_CLIENT_SECRET:}"
+      countryCode: "US"
+      playlistLoadLimit: 1
+      albumLoadLimit: 2
+      resolveArtistsInSearch: true
+      localFiles: false
+      preferAnonymousToken: false
+    applemusic:
+      countryCode: "US"
+      mediaAPIToken: "${APPLE_MUSIC_API_TOKEN:}"
+      playlistLoadLimit: 1
+      albumLoadLimit: 1
 
 logging:
   level:
     root: INFO
     lavalink: INFO
-

@@ -1,10 +1,13 @@
 services:
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4.0.8-alpine
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2-alpine
     restart: unless-stopped
     environment:
       _JAVA_OPTIONS: -Xmx512M
       LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-change-me}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      APPLE_MUSIC_API_TOKEN: ${APPLE_MUSIC_API_TOKEN:-}
     volumes:
       - ./config/lavalink.application.yml:/opt/Lavalink/application.yml:ro
       - ./plugins:/opt/Lavalink/plugins

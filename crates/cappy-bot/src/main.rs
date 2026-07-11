@@ -1,4 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+mod playback;
+
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result};
 use cappy_core::{
@@ -10,12 +12,16 @@ use serenity::{
     all::{Context, CreateAttachment, EditProfile, EventHandler, GatewayIntents, Message, Ready},
     async_trait,
 };
+use songbird::SerenityInit;
 use sqlx::sqlite::SqlitePoolOptions;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 struct Handler {
     parser: Arc<PrefixParser>,
+    playback: playback::PlaybackService,
+    guild_locks: Mutex<HashMap<serenity::all::GuildId, Arc<Mutex<()>>>>,
 }
 
 #[async_trait]
@@ -42,13 +48,56 @@ impl EventHandler for Handler {
         let response = match command.name {
             CommandName::Help => Some(HELP_RESPONSE),
             CommandName::Privacy => Some(PRIVACY_RESPONSE),
-            CommandName::Unknown => None,
+            CommandName::Unknown => Some("I don't know that one yet. Try `cap!help`."),
+            _ => None,
         };
 
         if let Some(response) = response
             && let Err(error) = message.channel_id.say(&context.http, response).await
         {
             warn!(error = %error, "failed to send command response");
+        }
+
+        if matches!(
+            command.name,
+            CommandName::Play
+                | CommandName::Queue
+                | CommandName::Skip
+                | CommandName::Stop
+                | CommandName::Now
+                | CommandName::Pause
+                | CommandName::Resume
+                | CommandName::Leave
+        ) {
+            let guild_id = message.guild_id.expect("guild checked above");
+            let guild_lock = {
+                let mut locks = self.guild_locks.lock().await;
+                locks
+                    .entry(guild_id)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
+            };
+            let _guard = guild_lock.lock().await;
+
+            if let Err(error) = self
+                .playback
+                .handle(&context, &message, command.name, command.arguments)
+                .await
+            {
+                warn!(
+                    guild_id = %guild_id,
+                    command = %command.name,
+                    error_category = error.category(),
+                    "playback command failed"
+                );
+                if let Err(send_error) = message
+                    .channel_id
+                    .say(&context.http, error.user_message())
+                    .await
+                {
+                    warn!(error = %send_error, "failed to send playback error response");
+                }
+            }
         }
     }
 
@@ -99,14 +148,21 @@ async fn main() -> Result<()> {
         "Lavalink configured; playback integration is deferred to milestone 1"
     );
 
-    let intents =
-        GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+    let playback = playback::PlaybackService::connect(&settings, database.clone()).await;
+
+    let intents = GatewayIntents::GUILDS
+        | GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::GUILD_VOICE_STATES
+        | GatewayIntents::MESSAGE_CONTENT;
     let handler = Handler {
         parser: Arc::new(PrefixParser::new(settings.prefixes.values)),
+        playback,
+        guild_locks: Mutex::new(HashMap::new()),
     };
     let mut client = Client::builder(&settings.discord.token, intents)
         .application_id(settings.discord.application_id.into())
         .event_handler(handler)
+        .register_songbird()
         .await
         .context("could not construct Discord client")?;
 

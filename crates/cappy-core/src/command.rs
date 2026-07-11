@@ -2,12 +2,20 @@ use std::fmt;
 
 pub const PRIVACY_RESPONSE: &str = "🔒 CappyFM does not monitor Discord conversation. It immediately ignores messages that do not start with `cappy!` or `cap!`. It stores only music-related activity such as requested tracks, likes, skips, session settings, and listening history. Ordinary chat is never sent to AI.";
 
-pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\nFor now:\n`cap!help` — show this message\n`cap!privacy` — explain the privacy boundary\n\nBoth `cap!` and `cappy!` work. Playback commands are coming in the next milestone.";
+pub const HELP_RESPONSE: &str = "**CappyFM** — the capybara has the aux.\n\n`cap!play <URL or search>` — YouTube, SoundCloud, Spotify, or Apple Music\n`cap!queue` — show up next\n`cap!now` — show the current track\n`cap!pause` / `cap!resume` — control playback\n`cap!skip` — skip the current track\n`cap!stop` — stop and clear the queue\n`cap!leave` — disconnect\n`cap!privacy` — explain the privacy boundary\n\nSpotify and Apple Music provide metadata; playback is matched to YouTube. Both prefixes work.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandName {
     Help,
     Privacy,
+    Play,
+    Queue,
+    Skip,
+    Stop,
+    Now,
+    Pause,
+    Resume,
+    Leave,
     Unknown,
 }
 
@@ -16,6 +24,14 @@ impl fmt::Display for CommandName {
         f.write_str(match self {
             Self::Help => "help",
             Self::Privacy => "privacy",
+            Self::Play => "play",
+            Self::Queue => "queue",
+            Self::Skip => "skip",
+            Self::Stop => "stop",
+            Self::Now => "now",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Leave => "leave",
             Self::Unknown => "unknown",
         })
     }
@@ -59,12 +75,18 @@ impl PrefixParser {
             .unwrap_or(command_text.len());
         let raw_name = &command_text[..split_at];
         let arguments = command_text[split_at..].trim_start();
-        let name = if raw_name.eq_ignore_ascii_case("help") {
-            CommandName::Help
-        } else if raw_name.eq_ignore_ascii_case("privacy") {
-            CommandName::Privacy
-        } else {
-            CommandName::Unknown
+        let name = match raw_name.to_ascii_lowercase().as_str() {
+            "help" => CommandName::Help,
+            "privacy" => CommandName::Privacy,
+            "play" => CommandName::Play,
+            "queue" => CommandName::Queue,
+            "skip" => CommandName::Skip,
+            "stop" => CommandName::Stop,
+            "now" | "np" => CommandName::Now,
+            "pause" => CommandName::Pause,
+            "resume" => CommandName::Resume,
+            "leave" => CommandName::Leave,
+            _ => CommandName::Unknown,
         };
 
         Some(ParsedCommand { name, arguments })
@@ -92,7 +114,7 @@ mod tests {
     #[test]
     fn optional_whitespace_and_original_argument_case_are_preserved() {
         let parsed = parser().parse("cap!   play Burial Archangel").unwrap();
-        assert_eq!(parsed.name, CommandName::Unknown);
+        assert_eq!(parsed.name, CommandName::Play);
         assert_eq!(parsed.arguments, "Burial Archangel");
     }
 

@@ -11,8 +11,12 @@ async-trait.workspace = true
 cappy-core = { path = "../cappy-core" }
 dotenvy.workspace = true
 serenity.workspace = true
+serde_json.workspace = true
+songbird.workspace = true
+lavalink-rs.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
+url.workspace = true

@@ -8,5 +8,6 @@ rust-version.workspace = true
 [dependencies]
 config.workspace = true
 serde.workspace = true
+strsim.workspace = true
 thiserror.workspace = true
-
+url.workspace = true
