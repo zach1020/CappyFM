@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+die() {
+  echo "CappyFM: $*" >&2
+  exit 1
+}
+
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || die "Docker is not installed. Install Docker Desktop first."
+  docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is not available."
+
+  if docker info >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v open >/dev/null 2>&1; then
+    echo "CappyFM: starting Docker Desktop..."
+    open -ga Docker || die "Docker Desktop could not be opened."
+    for _ in {1..60}; do
+      if docker info >/dev/null 2>&1; then
+        echo "CappyFM: Docker is ready."
+        return
+      fi
+      sleep 2
+    done
+    die "Docker Desktop did not become ready within two minutes."
+  fi
+
+  die "the Docker daemon is not running. Start it, then run ./run again."
+}
+
+ensure_environment() {
+  if [[ ! -f .env ]]; then
+    cp .env.example .env
+    chmod 600 .env
+    die "created .env from .env.example. Fill in your secrets, then run ./run again."
+  fi
+
+  if grep -Eq '^[[:space:]]*DISCORD_TOKEN=[[:space:]]*$' .env; then
+    die "DISCORD_TOKEN is empty in .env."
+  fi
+
+  mkdir -p data plugins
+}
+
+action="${1:-start}"
+
+case "$action" in
+  start)
+    ensure_docker
+    ensure_environment
+    echo "CappyFM: building and starting the bot and Lavalink..."
+    docker compose up -d --build
+    docker compose ps
+    echo
+    echo "CappyFM is running. Use './run logs' to watch it or './run stop' to shut it down."
+    ;;
+  restart)
+    ensure_docker
+    ensure_environment
+    echo "CappyFM: rebuilding and restarting..."
+    docker compose up -d --build --force-recreate
+    docker compose ps
+    ;;
+  stop)
+    ensure_docker
+    docker compose down
+    echo "CappyFM is stopped. Persistent data remains in ./data."
+    ;;
+  logs)
+    ensure_docker
+    docker compose logs --tail=150 -f bot lavalink
+    ;;
+  status)
+    ensure_docker
+    docker compose ps
+    ;;
+  *)
+    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status]"
+    ;;
+esac
