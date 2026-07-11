@@ -56,6 +56,8 @@ Commands are limited to five per user per ten seconds, with a five-second cooldo
 
 Spotify links require `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env`. Public Apple Music links currently resolve without a token, but `APPLE_MUSIC_API_TOKEN` is supported for reliable access. After changing credentials, recreate Lavalink with `docker compose up -d --force-recreate lavalink`.
 
+Spotify's playlist-items API requires user authorization and only exposes playlists owned by or collaboratively shared with that user. Add `http://127.0.0.1:8888/callback` to the Spotify app's redirect URIs, then run `./run spotify-login` (`run.cmd spotify-login` on Windows) once. Open the URL printed by the launcher and approve `playlist-read-private`. CappyFM stores the refresh token at `data/spotify-refresh-token`, which is ignored by Git and mounted only into the bot container. Access tokens are refreshed automatically. Spotify supplies metadata only; playback is still matched to YouTube, and explicit versions remain preferred.
+
 ## Bot avatar
 
 The canonical bot artwork is [assets/cappyfm-logo.png](assets/cappyfm-logo.png). After filling in `.env`, apply it to the Discord bot once with:

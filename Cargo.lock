@@ -192,6 +192,7 @@ dependencies = [
  "lavalink-rs",
  "rand 0.9.4",
  "reqwest",
+ "serde",
  "serde_json",
  "serenity",
  "songbird",

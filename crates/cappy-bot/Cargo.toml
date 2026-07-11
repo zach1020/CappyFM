@@ -13,6 +13,7 @@ cappy-core = { path = "../cappy-core" }
 cappy-dj = { path = "../cappy-dj" }
 dotenvy.workspace = true
 serenity.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 songbird.workspace = true
 lavalink-rs.workspace = true

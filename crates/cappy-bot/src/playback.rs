@@ -25,7 +25,10 @@ use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 use tokio::time::{Instant, sleep, timeout, timeout_at};
 
-use crate::radio::{self, RadioService};
+use crate::{
+    radio::{self, RadioService},
+    spotify::{self, SpotifyClient, SpotifyError},
+};
 
 const MAX_ARGUMENT_LENGTH: usize = 500;
 const MAX_PLAYLIST_ITEMS: usize = 100;
@@ -39,6 +42,7 @@ pub struct PlaybackService {
     database: SqlitePool,
     dj: DjService,
     radio: RadioService,
+    spotify: Option<SpotifyClient>,
 }
 
 #[derive(Debug, Error)]
@@ -53,6 +57,10 @@ pub enum PlaybackError {
     UnsupportedUrl,
     #[error("the metadata provider is not configured or unavailable")]
     ProviderUnavailable,
+    #[error("Spotify playlist authorization is required")]
+    SpotifyAuthorizationRequired,
+    #[error("Spotify playlist request failed: {0}")]
+    SpotifyPlaylist(String),
     #[error("no confident playable match was found")]
     LowConfidence,
     #[error("no playable track was found")]
@@ -83,6 +91,8 @@ impl PlaybackError {
             Self::ArgumentTooLong => "argument_too_long",
             Self::UnsupportedUrl => "unsupported_url",
             Self::ProviderUnavailable => "provider_unavailable",
+            Self::SpotifyAuthorizationRequired => "spotify_authorization_required",
+            Self::SpotifyPlaylist(_) => "spotify_playlist",
             Self::LowConfidence => "low_match_confidence",
             Self::NoTracks => "no_tracks",
             Self::Livestream => "livestream_rejected",
@@ -110,6 +120,12 @@ impl PlaybackError {
             }
             Self::ProviderUnavailable => {
                 "I recognize that link, but its metadata provider isn't configured or available. Check the provider credentials in `.env`."
+            }
+            Self::SpotifyAuthorizationRequired => {
+                "Spotify needs a one-time playlist login. Run `./run spotify-login` on the CappyFM computer, then try again."
+            }
+            Self::SpotifyPlaylist(_) => {
+                "Spotify couldn't read that playlist. It must be owned by—or shared collaboratively with—the account authorized through `./run spotify-login`."
             }
             Self::LowConfidence => {
                 "I found the track metadata, but I couldn't locate a confident playable match. Try a YouTube or SoundCloud link."
@@ -154,6 +170,7 @@ impl PlaybackService {
             database,
             dj,
             radio,
+            spotify: SpotifyClient::from_environment(),
         }
     }
 
@@ -317,7 +334,22 @@ impl PlaybackService {
             input.to_owned()
         };
         let (metadata_tracks, playlist_name) =
-            self.load_metadata(guild_id, &query, provider).await?;
+            if provider == MusicProvider::Spotify && spotify::is_playlist_url(input) {
+                let spotify = self
+                    .spotify
+                    .as_ref()
+                    .ok_or(PlaybackError::SpotifyAuthorizationRequired)?;
+                let playlist = spotify
+                    .load_owned_playlist(input, MAX_PLAYLIST_ITEMS)
+                    .await
+                    .map_err(map_spotify_error)?;
+                if playlist.tracks.is_empty() {
+                    return Err(PlaybackError::NoTracks);
+                }
+                (playlist.tracks, Some(playlist.name))
+            } else {
+                self.load_metadata(guild_id, &query, provider).await?
+            };
         let is_playlist = playlist_name.is_some();
         let mut tracks = Vec::new();
         let mut confidences = Vec::new();
@@ -2207,6 +2239,13 @@ fn validate_vibe(input: &str) -> Result<String, PlaybackError> {
         return Err(PlaybackError::InvalidSetting);
     }
     Ok(value.to_owned())
+}
+
+fn map_spotify_error(error: SpotifyError) -> PlaybackError {
+    match error {
+        SpotifyError::AuthorizationExpired => PlaybackError::SpotifyAuthorizationRequired,
+        other => PlaybackError::SpotifyPlaylist(other.to_string()),
+    }
 }
 
 fn format_now_playing(player: &lavalink_rs::model::player::Player) -> String {

@@ -13,8 +13,9 @@ if /I "%ACTION%"=="restart" goto restart
 if /I "%ACTION%"=="stop" goto stop
 if /I "%ACTION%"=="logs" goto logs
 if /I "%ACTION%"=="status" goto status
+if /I "%ACTION%"=="spotify-login" goto spotify_login
 
-echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status] 1>&2
+echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login] 1>&2
 exit /b 1
 
 :start
@@ -49,6 +50,19 @@ exit /b %errorlevel%
 
 :status
 docker compose ps
+exit /b %errorlevel%
+
+:spotify_login
+call :ensure_environment
+if errorlevel 1 exit /b 1
+echo CappyFM: building the one-time Spotify authorization helper...
+echo CappyFM: make sure http://127.0.0.1:8888/callback is listed in your Spotify app's redirect URIs.
+docker compose build bot
+if errorlevel 1 exit /b 1
+docker compose run --rm --no-deps -p 127.0.0.1:8888:8888 -e SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback -e SPOTIFY_REFRESH_TOKEN_FILE=/app/data/spotify-refresh-token bot cappy-bot --spotify-login
+if errorlevel 1 exit /b 1
+echo CappyFM: restarting the bot with Spotify playlist access...
+docker compose up -d --build bot
 exit /b %errorlevel%
 
 :ensure_docker

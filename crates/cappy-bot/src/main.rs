@@ -1,5 +1,6 @@
 mod playback;
 mod radio;
+mod spotify;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -244,6 +245,11 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .json()
         .init();
+
+    if std::env::args().any(|argument| argument == "--spotify-login") {
+        spotify::run_login_flow().await?;
+        return Ok(());
+    }
 
     let config_path = std::env::var_os("CAPPY_CONFIG")
         .map(PathBuf::from)

@@ -13,6 +13,7 @@ The recommendation system receives only explicit vibe commands and music activit
 ## Secrets and data
 
 - Secrets belong in `.env` or a deployment secret manager.
+- The optional Spotify OAuth refresh token is stored at `data/spotify-refresh-token` with owner-only permissions on Unix and is ignored by Git. Authorization requests only `playlist-read-private`.
 - `.env`, key files, databases, runtime data, plugins, and logs are ignored by Git.
 - SQLite stores music history and settings, not ordinary Discord conversation.
 - Internal DJ audio is served only on the Compose network and held in memory.
