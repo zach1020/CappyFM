@@ -29,7 +29,7 @@ docker compose up --build
 
 Join a voice channel, then try `cap!play Burial Archangel`. You can also queue YouTube, SoundCloud, Spotify, and Apple Music links. Spotify and Apple Music are metadata sources and are honestly labeled when matched to YouTube playback. Use `cap!queue`, `cap!now`, `cap!pause`, `cap!resume`, `cap!skip`, `cap!stop`, and `cap!leave` for playback control.
 
-For reliable Spotify and Apple Music resolution, add `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, and `APPLE_MUSIC_API_TOKEN` to `.env`, then recreate Lavalink with `docker compose up -d --force-recreate lavalink`.
+Spotify links require `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env`. Public Apple Music links currently resolve without a token, but `APPLE_MUSIC_API_TOKEN` is supported for reliable access. After changing credentials, recreate Lavalink with `docker compose up -d --force-recreate lavalink`.
 
 ## Bot avatar
 
