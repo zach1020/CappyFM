@@ -24,11 +24,12 @@ lavalink-rs = { version = "0.15", default-features = false, features = ["macros"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 strsim = "0.11"
 thiserror = "2.0"
-tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = "0.9"
 
 [profile.release]
 lto = "thin"

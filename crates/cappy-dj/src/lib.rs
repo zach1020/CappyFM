@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fmt, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
@@ -6,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 const MIN_SCRIPT_WORDS: usize = 70;
 const MAX_SCRIPT_WORDS: usize = 110;
@@ -160,6 +167,8 @@ pub struct DjSessionSettings {
     pub frequency: TalkFrequency,
     pub tracks_since_segment: usize,
     pub segments_spoken: usize,
+    pub opening_pending: bool,
+    pub tts_backoff_until: Option<Instant>,
 }
 
 impl Default for DjSessionSettings {
@@ -170,6 +179,8 @@ impl Default for DjSessionSettings {
             frequency: TalkFrequency::Normal,
             tracks_since_segment: 0,
             segments_spoken: 0,
+            opening_pending: true,
+            tts_backoff_until: None,
         }
     }
 }
@@ -181,6 +192,7 @@ pub struct DjContext<'a> {
     pub requester: &'a str,
     pub previous_track: Option<&'a str>,
     pub session_opening: bool,
+    pub radio_session: bool,
     pub personality: PersonalityLevel,
 }
 
@@ -240,11 +252,10 @@ pub struct OpenAiTtsProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
-    gain: f32,
 }
 
 impl OpenAiTtsProvider {
-    pub fn new(api_key: String, model: String, gain: f32) -> Result<Self, TtsError> {
+    pub fn new(api_key: String, model: String) -> Result<Self, TtsError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
@@ -253,7 +264,6 @@ impl OpenAiTtsProvider {
             client,
             api_key,
             model,
-            gain: gain.clamp(1.0, 1.5),
         })
     }
 }
@@ -269,7 +279,7 @@ impl TtsProvider for OpenAiTtsProvider {
                 "model": self.model,
                 "input": request.text,
                 "voice": request.voice_preset.provider_voice(),
-                "response_format": "pcm",
+                "response_format": "mp3",
                 "speed": 1.0
             }))
             .send()
@@ -283,8 +293,8 @@ impl TtsProvider for OpenAiTtsProvider {
             .await
             .map_err(|error| TtsError::Request(error.to_string()))?;
         Ok(TtsAudio {
-            bytes: pcm_to_wav_with_gain(&bytes, self.gain)?,
-            content_type: "audio/wav",
+            bytes: bytes.to_vec(),
+            content_type: "audio/mpeg",
         })
     }
 
@@ -318,8 +328,12 @@ impl DjWriter for OpenAiWriter {
     async fn write(&self, context: &DjContext<'_>) -> Result<String, DjError> {
         let prompt = format!(
             "Segment: {}\nPrevious track: {}\nTrack: {} by {}\nRequester: {}\nPersonality: {}",
-            if context.session_opening {
+            if context.session_opening && context.radio_session {
+                "radio session opening; explicitly say this is a radio session"
+            } else if context.session_opening {
                 "session opening"
+            } else if context.radio_session {
+                "radio transition"
             } else {
                 "requested track intro"
             },
@@ -335,7 +349,7 @@ impl DjWriter for OpenAiWriter {
             .bearer_auth(&self.api_key)
             .json(&serde_json::json!({
                 "model": self.model,
-                "instructions": "You write radio-DJ copy for CappyFM, a quirky capybara music host. Use only supplied playback context. Never invent facts. Never mention or imply access to Discord conversation. Do not claim to hear the room. Be warm, witty, musically literate, and conversational. Vary the structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.",
+                "instructions": "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, or a playful music-related tangent. If a sourced fact is not supplied, do not invent one. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.",
                 "input": prompt,
                 "max_output_tokens": 240
             }))
@@ -389,7 +403,10 @@ impl DjService {
             .filter(|key| !key.is_empty());
         let writer: Arc<dyn DjWriter> = match api_key.as_ref() {
             Some(key) => Arc::new(OpenAiWriter {
-                client: reqwest::Client::new(),
+                client: reqwest::Client::builder()
+                    .timeout(Duration::from_secs(8))
+                    .build()
+                    .unwrap_or_else(|_| unreachable!("static HTTP client configuration")),
                 api_key: key.clone(),
                 model: std::env::var("OPENAI_TEXT_MODEL")
                     .unwrap_or_else(|_| "gpt-5.4-nano".to_owned()),
@@ -401,10 +418,6 @@ impl DjService {
                 OpenAiTtsProvider::new(
                     key,
                     std::env::var("OPENAI_TTS_MODEL").unwrap_or_else(|_| "tts-1".to_owned()),
-                    std::env::var("CAPPY_DJ_GAIN")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(1.18),
                 )
                 .unwrap_or_else(|_| unreachable!("static HTTP client configuration")),
             ),
@@ -444,6 +457,13 @@ impl DjService {
         self.session_mut(guild_id).await.frequency = frequency;
     }
 
+    pub async fn mark_session_ended(&self, guild_id: u64) {
+        let mut session = self.session_mut(guild_id).await;
+        session.tracks_since_segment = 0;
+        session.segments_spoken = 0;
+        session.opening_pending = true;
+    }
+
     async fn session_mut(
         &self,
         guild_id: u64,
@@ -456,12 +476,15 @@ impl DjService {
     pub async fn create_intro(
         &self,
         guild_id: u64,
-        context: DjContext<'_>,
+        mut context: DjContext<'_>,
         force: bool,
     ) -> Result<Option<DjSegment>, DjError> {
         let settings = self.settings(guild_id).await;
         if settings.frequency == TalkFrequency::Off {
             return Ok(None);
+        }
+        if !force {
+            context.session_opening |= settings.opening_pending;
         }
         if !force
             && !context.session_opening
@@ -483,8 +506,13 @@ impl DjService {
         };
         validate_script(&script)?;
         let key = cache_key(settings.voice, &script);
+        let tts_backoff_active = settings
+            .tts_backoff_until
+            .is_some_and(|until| Instant::now() < until);
         let audio_uri = if self.cache.get(&key).await.is_some() {
-            Some(format!("{}/audio/{}.wav", self.public_audio_base, key))
+            Some(format!("{}/audio/{}.mp3", self.public_audio_base, key))
+        } else if tts_backoff_active {
+            None
         } else {
             match self
                 .tts
@@ -496,24 +524,38 @@ impl DjService {
             {
                 Ok(audio) => {
                     self.cache.insert(key.clone(), audio).await;
-                    Some(format!("{}/audio/{}.wav", self.public_audio_base, key))
+                    self.session_mut(guild_id).await.tts_backoff_until = None;
+                    Some(format!("{}/audio/{}.mp3", self.public_audio_base, key))
                 }
-                Err(_) => None,
+                Err(error) => {
+                    warn!(error = %error, "DJ speech synthesis failed");
+                    self.session_mut(guild_id).await.tts_backoff_until =
+                        Some(Instant::now() + Duration::from_secs(60));
+                    None
+                }
             }
         };
         {
             let mut session = self.session_mut(guild_id).await;
             session.tracks_since_segment = 0;
             session.segments_spoken += 1;
+            if audio_uri.is_some() {
+                session.opening_pending = false;
+            }
         }
         Ok(Some(DjSegment { script, audio_uri }))
     }
 }
 
 fn template_script(context: &DjContext<'_>) -> String {
-    if context.session_opening {
+    if context.session_opening && context.radio_session {
         format!(
-            "You're tuned to CappyFM, where the capybara has the aux and the queue is officially awake. We are opening this session with {} by {}, a selection from {}. Settle in, adjust Cappy to a comfortable personal volume in Discord, and let the music do its work. I will check back after a few songs with a recap and the next turn in the queue. For now, paws off the dial and ears on the opening track.",
+            "This radio session begins with {} by {}. The selected vibe has pointed us here, so this track gets the first word and the responsibility of drawing the musical map. There is no invented biography hiding behind the curtain, only the title, the artist, and the direction chosen for this station. Consider the signal officially live. The opening selection may now establish the atmosphere, make its argument, and decide what sort of strange musical neighborhood we have entered.",
+            context.title, context.artist,
+        )
+    } else if context.session_opening {
+        format!(
+            "We begin with {} by {}, requested by {}. A first song carries a peculiar responsibility: it has to open the door, establish the atmosphere, and convince every song waiting behind it that the night has standards. This one has accepted the assignment without filing an appeal. The title is on the marquee, the artist has the floor, and all unnecessary speeches have been escorted away. Let the opening selection make its own introduction from here.",
             context.title, context.artist, context.requester,
         )
     } else {
@@ -521,60 +563,29 @@ fn template_script(context: &DjContext<'_>) -> String {
             .previous_track
             .map(|track| format!("Coming off {track}. "))
             .unwrap_or_default();
+        let lead = if context.radio_session {
+            format!(
+                "Radio now turns toward {} by {}.",
+                context.title, context.artist
+            )
+        } else {
+            format!(
+                "Next comes {} by {}, requested by {}.",
+                context.title, context.artist, context.requester
+            )
+        };
         match context.personality {
             PersonalityLevel::Chill => format!(
-                "{recap}That gives us a good place to breathe before the queue moves forward. Up next is {} by {}, requested by {}. No invented trivia, no dramatic weather report, just a clean handoff and a little room for the last track to linger. Get comfortable, let the transition land, and keep the volume where it feels right for you. Cappy will return after a few more songs to take stock of where this session has traveled.",
-                context.title, context.artist, context.requester,
+                "{recap}{lead} The previous selection gets a moment to leave its outline behind while this title steps into focus. There is no need to manufacture a grand theory about the connection; sometimes two songs simply meet at the border and exchange a quiet nod. That is enough. Let the new track establish its own shape, choose its own pace, and carry this stretch of listening wherever it intends to go, without asking the transition to explain more than the music itself can say.",
             ),
             PersonalityLevel::Quirky => format!(
-                "{recap}The queue now pivots toward {} by {}, requested by {}. That is a confident little turn, and the capybara behind the console approves of the trajectory. I am keeping the commentary honest: what played, what is next, and precisely zero facts pulled from a suspiciously damp hat. Let this one take over the room at whatever personal volume suits you. I will resurface after another handful of tracks with the next chapter of our highly organized musical wandering.",
-                context.title, context.artist, context.requester,
+                "{recap}{lead} The title has arrived wearing the expression of someone who knows exactly why it was invited, which is more confidence than most of us bring to a Tuesday. No imaginary statistics or suspicious folklore are required here. We have an artist, a song, and a perfectly respectable musical handoff. The capybara has examined the paperwork, stamped it with one damp paw, and declared this selection ready to become the entire point for the next few minutes.",
             ),
             PersonalityLevel::Unhinged => format!(
-                "{recap}Now {} has placed {} by {} directly in our path, and retreat is neither necessary nor particularly stylish. The queue has made its decision. The lights are imaginary, the turntables are under strict paw supervision, and the transition is cleared for launch. Keep your own Discord volume civilized while Cappy sends this selection into orbit. I will be back after a few songs to inspect the musical consequences, summarize the journey, and announce whatever excellent decision comes next.",
-                context.requester, context.title, context.artist,
+                "{recap}{lead} The title has entered the building like it owns several legally questionable fog machines. Nobody panic. The song has credentials, the artist has been named, and the transition ritual may proceed beneath the ancient laws of rhythm and extremely confident pointing. I have released one ceremonial capybara into the imaginary control room as a witness. It understands nothing about audio engineering, but its posture is impeccable. Enough bureaucracy. Let the music commence before the paperwork develops consciousness and demands a producer credit.",
             ),
         }
     }
-}
-
-fn pcm_to_wav_with_gain(pcm: &[u8], requested_gain: f32) -> Result<Vec<u8>, TtsError> {
-    if !pcm.chunks_exact(2).remainder().is_empty() || pcm.len() > (u32::MAX - 44) as usize {
-        return Err(TtsError::Request("invalid PCM response".to_owned()));
-    }
-
-    let peak = pcm
-        .chunks_exact(2)
-        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as i32)
-        .map(i32::abs)
-        .max()
-        .unwrap_or(0);
-    let clipping_safe_gain = if peak == 0 {
-        requested_gain
-    } else {
-        (i16::MAX as f32 / peak as f32).min(requested_gain)
-    };
-
-    let data_len = pcm.len() as u32;
-    let mut wav = Vec::with_capacity(pcm.len() + 44);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16_u32.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&24_000_u32.to_le_bytes());
-    wav.extend_from_slice(&48_000_u32.to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
-    wav.extend_from_slice(&16_u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    for sample in pcm.chunks_exact(2) {
-        let value = i16::from_le_bytes([sample[0], sample[1]]) as f32;
-        let amplified = (value * clipping_safe_gain).round() as i16;
-        wav.extend_from_slice(&amplified.to_le_bytes());
-    }
-    Ok(wav)
 }
 
 pub fn validate_script(script: &str) -> Result<(), DjError> {
@@ -589,8 +600,13 @@ pub fn validate_script(script: &str) -> Result<(), DjError> {
     if [
         "as an ai",
         "discord conversation",
+        "discord",
         "i heard you",
         "monthly listeners",
+        "volume",
+        "the bot",
+        "this app",
+        "the queue",
     ]
     .iter()
     .any(|phrase| lowercase.contains(phrase))
@@ -637,10 +653,36 @@ pub enum DjError {
 mod tests {
     use super::*;
 
+    struct StaticTtsProvider;
+
+    #[async_trait]
+    impl TtsProvider for StaticTtsProvider {
+        async fn synthesize(&self, _request: TtsRequest) -> Result<TtsAudio, TtsError> {
+            Ok(TtsAudio {
+                bytes: vec![1, 2, 3],
+                content_type: "audio/mpeg",
+            })
+        }
+
+        fn available_voices(&self) -> Vec<VoiceDescriptor> {
+            voice_descriptors()
+        }
+    }
+
     fn test_service() -> DjService {
         DjService {
             writer: Arc::new(TemplateWriter),
             tts: Arc::new(DisabledTtsProvider),
+            sessions: Arc::default(),
+            cache: AudioCache::default(),
+            public_audio_base: "http://bot:8080".to_owned(),
+        }
+    }
+
+    fn test_service_with_audio() -> DjService {
+        DjService {
+            writer: Arc::new(TemplateWriter),
+            tts: Arc::new(StaticTtsProvider),
             sessions: Arc::default(),
             cache: AudioCache::default(),
             public_audio_base: "http://bot:8080".to_owned(),
@@ -699,6 +741,7 @@ mod tests {
                     requester: "listener",
                     previous_track: None,
                     session_opening: true,
+                    radio_session: false,
                     personality: PersonalityLevel::Quirky,
                 },
                 false,
@@ -706,6 +749,35 @@ mod tests {
             .await
             .expect("opening should succeed");
         assert!(segment.is_some());
+        assert!(service.settings(1).await.tts_backoff_until.is_some());
+    }
+
+    #[tokio::test]
+    async fn ended_session_makes_the_next_track_an_opening() {
+        let service = test_service_with_audio();
+        let context = || DjContext {
+            title: "Song",
+            artist: "Artist",
+            requester: "listener",
+            previous_track: None,
+            session_opening: false,
+            radio_session: false,
+            personality: PersonalityLevel::Quirky,
+        };
+        service
+            .create_intro(1, context(), false)
+            .await
+            .expect("first opening should succeed");
+        assert!(!service.settings(1).await.opening_pending);
+        service.mark_session_ended(1).await;
+        assert!(service.settings(1).await.opening_pending);
+        assert!(
+            service
+                .create_intro(1, context(), false)
+                .await
+                .expect("reopened session should succeed")
+                .is_some()
+        );
     }
 
     #[test]
@@ -716,6 +788,7 @@ mod tests {
             requester: "listener",
             previous_track: Some("Last Song by Last Artist"),
             session_opening: false,
+            radio_session: false,
             personality: PersonalityLevel::Chill,
         });
         assert!(script.contains("Coming off Last Song by Last Artist"));
@@ -723,19 +796,29 @@ mod tests {
     }
 
     #[test]
-    fn speech_gain_builds_clipping_safe_wav_audio() {
-        let pcm = [1_000_i16, -2_000_i16, 30_000_i16]
-            .into_iter()
-            .flat_map(i16::to_le_bytes)
-            .collect::<Vec<_>>();
-        let wav = pcm_to_wav_with_gain(&pcm, 1.18).expect("valid PCM");
-        assert_eq!(&wav[..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        let samples = wav[44..]
-            .chunks_exact(2)
-            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
-            .collect::<Vec<_>>();
-        assert!(samples[0] > 1_000);
-        assert_eq!(samples[2], i16::MAX);
+    fn radio_opening_identifies_the_session_and_transition_stays_music_focused() {
+        let opening = template_script(&DjContext {
+            title: "Opening Song",
+            artist: "Opening Artist",
+            requester: "radio",
+            previous_track: None,
+            session_opening: true,
+            radio_session: true,
+            personality: PersonalityLevel::Quirky,
+        });
+        assert!(opening.to_ascii_lowercase().contains("radio session"));
+        assert!(validate_script(&opening).is_ok());
+
+        let transition = template_script(&DjContext {
+            title: "Next Song",
+            artist: "Next Artist",
+            requester: "radio",
+            previous_track: Some("Previous Song by Previous Artist"),
+            session_opening: false,
+            radio_session: true,
+            personality: PersonalityLevel::Unhinged,
+        });
+        assert!(!transition.contains("requested by radio"));
+        assert!(validate_script(&transition).is_ok());
     }
 }

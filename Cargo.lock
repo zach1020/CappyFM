@@ -190,6 +190,8 @@ dependencies = [
  "cappy-dj",
  "dotenvy",
  "lavalink-rs",
+ "rand 0.9.4",
+ "reqwest",
  "serde_json",
  "serenity",
  "songbird",
@@ -224,6 +226,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
