@@ -14,13 +14,15 @@ if /I "%ACTION%"=="stop" goto stop
 if /I "%ACTION%"=="logs" goto logs
 if /I "%ACTION%"=="status" goto status
 if /I "%ACTION%"=="spotify-login" goto spotify_login
+if /I "%ACTION%"=="spotify-status" goto spotify_status
 
-echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login] 1>&2
+echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login^|spotify-status] 1>&2
 exit /b 1
 
 :start
 call :ensure_environment
 if errorlevel 1 exit /b 1
+call :check_spotify
 echo CappyFM: building and starting the bot and Lavalink...
 docker compose up -d --build
 if errorlevel 1 exit /b 1
@@ -32,6 +34,7 @@ exit /b 0
 :restart
 call :ensure_environment
 if errorlevel 1 exit /b 1
+call :check_spotify
 echo CappyFM: rebuilding and restarting...
 docker compose up -d --build --force-recreate
 if errorlevel 1 exit /b 1
@@ -64,6 +67,33 @@ if errorlevel 1 exit /b 1
 echo CappyFM: restarting the bot with Spotify playlist access...
 docker compose up -d --build bot
 exit /b %errorlevel%
+
+:spotify_status
+call :ensure_environment
+if errorlevel 1 exit /b 1
+call :check_spotify
+exit /b %errorlevel%
+
+:check_spotify
+set "SPOTIFY_MISSING=0"
+findstr /R /C:"^[ ]*SPOTIFY_CLIENT_ID=.[^ ]*" .env >nul
+if errorlevel 1 (
+  echo CappyFM: Spotify client ID is missing from .env.
+  set "SPOTIFY_MISSING=1"
+)
+findstr /R /C:"^[ ]*SPOTIFY_CLIENT_SECRET=.[^ ]*" .env >nul
+if errorlevel 1 (
+  echo CappyFM: Spotify client secret is missing from .env.
+  set "SPOTIFY_MISSING=1"
+)
+if exist data\spotify-refresh-token goto spotify_token_ready
+findstr /R /C:"^[ ]*SPOTIFY_REFRESH_TOKEN=.[^ ]*" .env >nul
+if not errorlevel 1 goto spotify_token_ready
+echo CappyFM: Spotify playlist authorization is missing. Run "run.cmd spotify-login".
+set "SPOTIFY_MISSING=1"
+:spotify_token_ready
+if "%SPOTIFY_MISSING%"=="0" echo CappyFM: Spotify credentials and playlist authorization are configured.
+exit /b %SPOTIFY_MISSING%
 
 :ensure_docker
 where docker >nul 2>&1

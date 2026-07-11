@@ -254,8 +254,6 @@ impl RadioService {
 
         let reason = recommendation_reason(vibe, flavor, taste_artist.as_deref());
         let mut added = 0;
-        let dj_deadline = Instant::now() + Duration::from_secs(12);
-        let mut dj_budget_exhausted = false;
         for mut track in candidates {
             if added >= target
                 || track.info.is_stream
@@ -278,7 +276,6 @@ impl RadioService {
             self.ensure_track(&track).await?;
             let session_opening = current.is_none() && queue_count == 0 && added == 0;
             if !previous_was_dj
-                && !dj_budget_exhausted
                 && let Some(dj_track) = self
                     .radio_dj_track(
                         client,
@@ -288,7 +285,7 @@ impl RadioService {
                             artist: &artist,
                             previous_track: previous_track.as_deref(),
                             session_opening,
-                            deadline: dj_deadline,
+                            deadline: Instant::now() + Duration::from_secs(12),
                         },
                     )
                     .await
@@ -297,7 +294,6 @@ impl RadioService {
                     .push_to_back(TrackInQueue::from(dj_track))
                     .map_err(|error| error.to_string())?;
             }
-            dj_budget_exhausted = Instant::now() >= dj_deadline;
             queue
                 .push_to_back(TrackInQueue::from(track))
                 .map_err(|error| error.to_string())?;
@@ -327,6 +323,7 @@ impl RadioService {
                         session_opening: context.session_opening,
                         radio_session: true,
                         personality: self.dj.settings(guild_id.get()).await.personality,
+                        skip_transition: false,
                     },
                     false,
                 )

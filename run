@@ -48,12 +48,33 @@ ensure_environment() {
   mkdir -p data plugins
 }
 
+spotify_status() {
+  local missing=0
+  if ! grep -Eq '^[[:space:]]*SPOTIFY_CLIENT_ID=[^[:space:]].*$' .env; then
+    echo "CappyFM: Spotify client ID is missing from .env."
+    missing=1
+  fi
+  if ! grep -Eq '^[[:space:]]*SPOTIFY_CLIENT_SECRET=[^[:space:]].*$' .env; then
+    echo "CappyFM: Spotify client secret is missing from .env."
+    missing=1
+  fi
+  if [[ ! -s data/spotify-refresh-token ]] && ! grep -Eq '^[[:space:]]*SPOTIFY_REFRESH_TOKEN=[^[:space:]].*$' .env; then
+    echo "CappyFM: Spotify playlist authorization is missing. Run './run spotify-login'."
+    missing=1
+  fi
+  if (( missing == 0 )); then
+    echo "CappyFM: Spotify credentials and playlist authorization are configured."
+  fi
+  return "$missing"
+}
+
 action="${1:-start}"
 
 case "$action" in
   start)
     ensure_docker
     ensure_environment
+    spotify_status || true
     echo "CappyFM: building and starting the bot and Lavalink..."
     docker compose up -d --build
     docker compose ps
@@ -63,6 +84,7 @@ case "$action" in
   restart)
     ensure_docker
     ensure_environment
+    spotify_status || true
     echo "CappyFM: rebuilding and restarting..."
     docker compose up -d --build --force-recreate
     docker compose ps
@@ -94,7 +116,11 @@ case "$action" in
     echo "CappyFM: restarting the bot with Spotify playlist access..."
     docker compose up -d --build bot
     ;;
+  spotify-status)
+    ensure_environment
+    spotify_status
+    ;;
   *)
-    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status|spotify-login]"
+    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status|spotify-login|spotify-status]"
     ;;
 esac

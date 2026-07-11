@@ -90,6 +90,7 @@ pub enum PersonalityLevel {
     Chill,
     Quirky,
     Unhinged,
+    Roast,
 }
 
 impl fmt::Display for PersonalityLevel {
@@ -98,6 +99,7 @@ impl fmt::Display for PersonalityLevel {
             Self::Chill => "chill",
             Self::Quirky => "quirky",
             Self::Unhinged => "unhinged",
+            Self::Roast => "roast",
         })
     }
 }
@@ -110,6 +112,7 @@ impl FromStr for PersonalityLevel {
             "chill" => Ok(Self::Chill),
             "quirky" => Ok(Self::Quirky),
             "unhinged" => Ok(Self::Unhinged),
+            "roast" => Ok(Self::Roast),
             _ => Err(DjError::InvalidSetting),
         }
     }
@@ -194,6 +197,7 @@ pub struct DjContext<'a> {
     pub session_opening: bool,
     pub radio_session: bool,
     pub personality: PersonalityLevel,
+    pub skip_transition: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -328,7 +332,9 @@ impl DjWriter for OpenAiWriter {
     async fn write(&self, context: &DjContext<'_>) -> Result<String, DjError> {
         let prompt = format!(
             "Segment: {}\nPrevious track: {}\nTrack: {} by {}\nRequester: {}\nPersonality: {}",
-            if context.session_opening && context.radio_session {
+            if context.skip_transition {
+                "skip transition; acknowledge the change with a fresh variation on switching it up, then introduce the supplied next track"
+            } else if context.session_opening && context.radio_session {
                 "radio session opening; explicitly say this is a radio session"
             } else if context.session_opening {
                 "session opening"
@@ -349,7 +355,7 @@ impl DjWriter for OpenAiWriter {
             .bearer_auth(&self.api_key)
             .json(&serde_json::json!({
                 "model": self.model,
-                "instructions": "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, or a playful music-related tangent. If a sourced fact is not supplied, do not invent one. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.",
+                "instructions": "You write radio-DJ copy as Cappy, a quirky capybara music host. Talk only about the supplied song, artist, previous track, request, music history, scene lore, production, genre context, or a playful music-related tangent. You may draw on unofficial sources, common music lore, rumors, informed inference, and your own critical interpretation. Make uncertain or apocryphal material sound appropriately playful or qualified instead of presenting it as confirmed reporting. A little harmless inaccuracy is acceptable when the result is insightful or funny. Never invent or repeat serious allegations, private personal details, medical claims, criminal claims, or claims targeting protected traits. Never discuss Discord, an app, volume, controls, the bot, the queue, system behavior, or future commentary. Never mention or imply access to conversation, and do not claim to hear the room. Avoid repeating the same framing, promises, or catchphrases. Be warm, musically literate, and willing to become amusingly unhinged when the personality calls for it. For personality roast, roast the supplied song every time with sharp, playful music criticism; never target protected traits or the listener. Vary structure and pacing. Write 70 to 110 words, use at most one capybara joke, and no emojis. Return only the spoken script.",
                 "input": prompt,
                 "max_output_tokens": 240
             }))
@@ -488,6 +494,7 @@ impl DjService {
         }
         if !force
             && !context.session_opening
+            && context.personality != PersonalityLevel::Roast
             && settings.tracks_since_segment < settings.frequency.gap(settings.segments_spoken)
         {
             self.session_mut(guild_id).await.tracks_since_segment += 1;
@@ -548,9 +555,28 @@ impl DjService {
 }
 
 fn template_script(context: &DjContext<'_>) -> String {
-    if context.session_opening && context.radio_session {
+    if context.personality == PersonalityLevel::Roast {
+        let recap = context
+            .previous_track
+            .map(|track| format!("We are escaping {track}, and not a moment too soon. "))
+            .unwrap_or_default();
+        let switch = if context.skip_transition {
+            "Let's switch it up before that last track starts demanding applause for basic chord changes. "
+        } else {
+            ""
+        };
         format!(
-            "This radio session begins with {} by {}. The selected vibe has pointed us here, so this track gets the first word and the responsibility of drawing the musical map. There is no invented biography hiding behind the curtain, only the title, the artist, and the direction chosen for this station. Consider the signal officially live. The opening selection may now establish the atmosphere, make its argument, and decide what sort of strange musical neighborhood we have entered.",
+            "{recap}{switch}Here comes {} by {}. This song has arrived with the confidence of a masterpiece and the paperwork of a group project finished during lunch. I am prepared to give it a fair hearing, which is generous considering the title already expects its own scented candle. Perhaps it will surprise us. Perhaps it will rearrange familiar sounds and call the furniture new. The roast is hot, the standards are unreasonable, and the track may now attempt a defense.",
+            context.title, context.artist,
+        )
+    } else if context.skip_transition {
+        format!(
+            "Let's switch it up a little. We are leaving the last selection where it stands and turning toward {} by {}. No courtroom drama, no elaborate autopsy, just a clean change of scenery and a fresh set of speakers to inspect. Sometimes the correct musical decision is simply to keep moving until the room feels different. This track gets the next chance to set the pace, redraw the atmosphere, and make a stronger case for the moment. New direction, new title, clean handoff. Let us hear what it has.",
+            context.title, context.artist,
+        )
+    } else if context.session_opening && context.radio_session {
+        format!(
+            "This radio session begins with {} by {}. The selected vibe has pointed us here, so this track gets the first word and the responsibility of drawing the musical map. The title suggests a destination, the artist brings the luggage, and Cappy has already formed at least three opinions with questionable academic support. Consider the signal officially live. The opening selection may now establish the atmosphere, make its argument, and decide what sort of strange musical neighborhood we have entered.",
             context.title, context.artist,
         )
     } else if context.session_opening {
@@ -579,11 +605,12 @@ fn template_script(context: &DjContext<'_>) -> String {
                 "{recap}{lead} The previous selection gets a moment to leave its outline behind while this title steps into focus. There is no need to manufacture a grand theory about the connection; sometimes two songs simply meet at the border and exchange a quiet nod. That is enough. Let the new track establish its own shape, choose its own pace, and carry this stretch of listening wherever it intends to go, without asking the transition to explain more than the music itself can say.",
             ),
             PersonalityLevel::Quirky => format!(
-                "{recap}{lead} The title has arrived wearing the expression of someone who knows exactly why it was invited, which is more confidence than most of us bring to a Tuesday. No imaginary statistics or suspicious folklore are required here. We have an artist, a song, and a perfectly respectable musical handoff. The capybara has examined the paperwork, stamped it with one damp paw, and declared this selection ready to become the entire point for the next few minutes.",
+                "{recap}{lead} The title has arrived wearing the expression of someone who knows exactly why it was invited, which is more confidence than most of us bring to a Tuesday. Somewhere in the vast and unreliable archives of music lore, this transition was probably foretold on a coffee-stained set list. We have an artist, a song, and a perfectly respectable musical handoff. The capybara has examined the evidence, stamped it with one damp paw, and declared this selection ready to become the entire point for the next few minutes.",
             ),
             PersonalityLevel::Unhinged => format!(
                 "{recap}{lead} The title has entered the building like it owns several legally questionable fog machines. Nobody panic. The song has credentials, the artist has been named, and the transition ritual may proceed beneath the ancient laws of rhythm and extremely confident pointing. I have released one ceremonial capybara into the imaginary control room as a witness. It understands nothing about audio engineering, but its posture is impeccable. Enough bureaucracy. Let the music commence before the paperwork develops consciousness and demands a producer credit.",
             ),
+            PersonalityLevel::Roast => unreachable!("roast handled above"),
         }
     }
 }
@@ -743,6 +770,7 @@ mod tests {
                     session_opening: true,
                     radio_session: false,
                     personality: PersonalityLevel::Quirky,
+                    skip_transition: false,
                 },
                 false,
             )
@@ -763,6 +791,7 @@ mod tests {
             session_opening: false,
             radio_session: false,
             personality: PersonalityLevel::Quirky,
+            skip_transition: false,
         };
         service
             .create_intro(1, context(), false)
@@ -790,6 +819,7 @@ mod tests {
             session_opening: false,
             radio_session: false,
             personality: PersonalityLevel::Chill,
+            skip_transition: false,
         });
         assert!(script.contains("Coming off Last Song by Last Artist"));
         assert!(validate_script(&script).is_ok());
@@ -805,6 +835,7 @@ mod tests {
             session_opening: true,
             radio_session: true,
             personality: PersonalityLevel::Quirky,
+            skip_transition: false,
         });
         assert!(opening.to_ascii_lowercase().contains("radio session"));
         assert!(validate_script(&opening).is_ok());
@@ -817,8 +848,75 @@ mod tests {
             session_opening: false,
             radio_session: true,
             personality: PersonalityLevel::Unhinged,
+            skip_transition: false,
         });
         assert!(!transition.contains("requested by radio"));
         assert!(validate_script(&transition).is_ok());
+    }
+
+    #[test]
+    fn roast_and_skip_templates_are_valid_spoken_copy() {
+        let roast = template_script(&DjContext {
+            title: "Next Song",
+            artist: "Next Artist",
+            requester: "Display Name",
+            previous_track: Some("Previous Song by Previous Artist"),
+            session_opening: false,
+            radio_session: false,
+            personality: PersonalityLevel::Roast,
+            skip_transition: true,
+        });
+        assert!(roast.to_ascii_lowercase().contains("roast"));
+        assert!(validate_script(&roast).is_ok());
+
+        let skip = template_script(&DjContext {
+            title: "Next Song",
+            artist: "Next Artist",
+            requester: "Display Name",
+            previous_track: Some("Previous Song by Previous Artist"),
+            session_opening: false,
+            radio_session: false,
+            personality: PersonalityLevel::Quirky,
+            skip_transition: true,
+        });
+        assert!(skip.to_ascii_lowercase().contains("switch it up"));
+        assert!(validate_script(&skip).is_ok());
+    }
+
+    #[tokio::test]
+    async fn roast_mode_speaks_on_every_track_unless_shut_up() {
+        let service = test_service_with_audio();
+        let context = || DjContext {
+            title: "Song",
+            artist: "Artist",
+            requester: "Display Name",
+            previous_track: None,
+            session_opening: false,
+            radio_session: false,
+            personality: PersonalityLevel::Roast,
+            skip_transition: false,
+        };
+        assert!(
+            service
+                .create_intro(1, context(), false)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            service
+                .create_intro(1, context(), false)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        service.set_frequency(1, TalkFrequency::Off).await;
+        assert!(
+            service
+                .create_intro(1, context(), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

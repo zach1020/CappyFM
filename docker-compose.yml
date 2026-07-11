@@ -29,6 +29,11 @@ services:
       CAPPY_CONFIG: /app/config/cappyfm.toml
       DATABASE_URL: sqlite:///app/data/cappyfm.db?mode=rwc
       LAVALINK_HOST: lavalink
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8888/callback}
+      SPOTIFY_REFRESH_TOKEN: ${SPOTIFY_REFRESH_TOKEN:-}
+      SPOTIFY_REFRESH_TOKEN_FILE: /app/data/spotify-refresh-token
     volumes:
       - ./data:/app/data
     depends_on:

@@ -423,16 +423,15 @@ impl PlaybackService {
             .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
         let session_opening = player_before.track.is_none() && current_count == 0;
         let mut interleaved = Vec::with_capacity(tracks.len() + (tracks.len() / 2) + 1);
-        let dj_deadline = Instant::now() + Duration::from_secs(12);
-        let mut dj_timed_out = false;
+        let requester_name = requester_display_name(message);
         let mut previous_track = player_before.track.as_ref().map(|track| {
             let (title, artist) = display_metadata(track);
             format!("{title} by {artist}")
         });
         for (index, music_track) in tracks.into_iter().enumerate() {
             let (title, artist) = display_metadata(&music_track.track);
-            if !dj_timed_out {
-                let intro_result = timeout_at(dj_deadline, async {
+            {
+                let intro_result = timeout(Duration::from_secs(12), async {
                     let segment = self
                         .dj
                         .create_intro(
@@ -440,11 +439,12 @@ impl PlaybackService {
                             DjContext {
                                 title: &title,
                                 artist: &artist,
-                                requester: &message.author.name,
+                                requester: &requester_name,
                                 previous_track: previous_track.as_deref(),
                                 session_opening: session_opening && index == 0,
                                 radio_session: false,
                                 personality: self.dj.settings(guild_id.get()).await.personality,
+                                skip_transition: false,
                             },
                             false,
                         )
@@ -465,8 +465,7 @@ impl PlaybackService {
                     }
                     Ok(None) => {}
                     Err(_) => {
-                        dj_timed_out = true;
-                        tracing::warn!(guild_id = %guild_id, "DJ generation timed out; playing music without blocking");
+                        tracing::warn!(guild_id = %guild_id, "DJ generation timed out for one track; playing music without blocking");
                     }
                 }
             }
@@ -1122,15 +1121,92 @@ impl PlaybackService {
         let Some(current) = current else {
             return say(message, context, "Nothing to skip.".to_owned()).await;
         };
+        let queue = player.get_queue();
+        if queue
+            .get_track(0)
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?
+            .is_some_and(|item| is_dj_track(&item.track))
+        {
+            queue
+                .remove(0)
+                .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        }
+        let next = queue
+            .get_track(0)
+            .await
+            .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+        let mut spoken_skip = false;
+        let mut fallback_copy = None;
+        {
+            let (title, artist, radio_session) = next
+                .as_ref()
+                .map(|next| {
+                    let (title, artist) = display_metadata(&next.track);
+                    (title, artist, is_radio_track(&next.track))
+                })
+                .unwrap_or_else(|| {
+                    (
+                        "a quick change of pace".to_owned(),
+                        "Cappy".to_owned(),
+                        false,
+                    )
+                });
+            let (previous_title, previous_artist) = display_metadata(&current);
+            let previous_track = format!("{previous_title} by {previous_artist}");
+            let requester_name = requester_display_name(message);
+            let segment = self
+                .dj
+                .create_intro(
+                    guild_id.get(),
+                    DjContext {
+                        title: &title,
+                        artist: &artist,
+                        requester: &requester_name,
+                        previous_track: Some(&previous_track),
+                        session_opening: false,
+                        radio_session,
+                        personality: self.dj.settings(guild_id.get()).await.personality,
+                        skip_transition: true,
+                    },
+                    true,
+                )
+                .await
+                .map_err(|error| PlaybackError::Dj(error.to_string()))?;
+            if let Some(segment) = segment {
+                fallback_copy = Some(segment.script.clone());
+                if let Some(uri) = segment.audio_uri
+                    && let Some(mut narration) = self.load_single_track(guild_id, &uri).await?
+                {
+                    narration.user_data = Some(serde_json::json!({
+                        "dj_segment": true,
+                        "script": segment.script,
+                        "skip_transition": true,
+                    }));
+                    queue
+                        .push_to_front(TrackInQueue::from(narration))
+                        .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
+                    spoken_skip = true;
+                }
+            }
+        }
         player
             .skip()
             .map_err(|error| PlaybackError::Lavalink(error.to_string()))?;
-        say(
-            message,
-            context,
-            format!("Skipped `{}`.", display_metadata(&current).0),
-        )
-        .await
+        let response = if spoken_skip {
+            format!(
+                "Skipped `{}`. Cappy's switching it up now.",
+                display_metadata(&current).0
+            )
+        } else if let Some(copy) = fallback_copy {
+            format!(
+                "Skipped `{}`. DJ copy (TTS unavailable): {copy}",
+                display_metadata(&current).0
+            )
+        } else {
+            format!("Skipped `{}`.", display_metadata(&current).0)
+        };
+        say(message, context, response).await
     }
 
     async fn stop(
@@ -1336,11 +1412,12 @@ impl PlaybackService {
                 DjContext {
                     title: "a microphone check",
                     artist: "CappyFM",
-                    requester: &message.author.name,
+                    requester: &requester_display_name(message),
                     previous_track: None,
                     session_opening: false,
                     radio_session: false,
                     personality: self.dj.settings(guild_id.get()).await.personality,
+                    skip_transition: false,
                 },
                 true,
             )
@@ -1457,11 +1534,12 @@ impl PlaybackService {
                 DjContext {
                     title: &title,
                     artist: &artist,
-                    requester: &message.author.name,
+                    requester: &requester_display_name(message),
                     previous_track: None,
                     session_opening: false,
                     radio_session: false,
                     personality: self.dj.settings(guild_id.get()).await.personality,
+                    skip_transition: false,
                 },
                 true,
             )
@@ -2121,11 +2199,12 @@ impl PlaybackService {
                     DjContext {
                         title: &title,
                         artist: &artist,
-                        requester: &message.author.name,
+                        requester: &requester_display_name(message),
                         previous_track: previous_track.as_deref(),
                         session_opening: state.track.is_none(),
                         radio_session: true,
                         personality: self.dj.settings(guild_id.get()).await.personality,
+                        skip_transition: false,
                     },
                     false,
                 )
@@ -2480,6 +2559,15 @@ fn is_dj_track(track: &TrackData) -> bool {
         .and_then(|value| value.get("dj_segment"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn requester_display_name(message: &Message) -> String {
+    message
+        .member
+        .as_ref()
+        .and_then(|member| member.nick.clone())
+        .or_else(|| message.author.global_name.clone())
+        .unwrap_or_else(|| message.author.name.clone())
 }
 
 fn format_duration(milliseconds: u64) -> String {

@@ -5,7 +5,7 @@
 - A Discord application with Message Content Intent enabled.
 - Docker Engine with Compose v2.
 - A host with persistent storage for `./data`.
-- Spotify credentials for Spotify links and an OpenAI API key for spoken DJ segments.
+- Spotify credentials plus a per-host `spotify-login` authorization for Spotify playlists, and an OpenAI API key for spoken DJ segments. Verify with `./run spotify-status` or `run.cmd spotify-status`.
 
 Copy `.env.example` to `.env` and fill in every required secret. Never commit `.env`. Use a unique Lavalink password and restrict port `2333` at the host firewall; it is published for local diagnostics but should not be internet-accessible.
 
