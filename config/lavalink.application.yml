@@ -30,6 +30,14 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+    # Explicitly prefer clients that can return playable audio streams. The
+    # defaults can successfully resolve radio metadata yet fail when the
+    # selected client is asked to stream from a cloud-hosted IP.
+    clients:
+      - WEB
+      - MWEB
+      - ANDROID_VR
+      - WEBEMBEDDED
   lavasrc:
     providers:
       - "ytsearch:\"%ISRC%\""
