@@ -15,14 +15,17 @@ if /I "%ACTION%"=="logs" goto logs
 if /I "%ACTION%"=="status" goto status
 if /I "%ACTION%"=="spotify-login" goto spotify_login
 if /I "%ACTION%"=="spotify-status" goto spotify_status
+if /I "%ACTION%"=="apple-music-status" goto apple_music_status
+if /I "%ACTION%"=="apple-status" goto apple_music_status
 
-echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login^|spotify-status] 1>&2
+echo CappyFM: unknown command "%ACTION%". Use: run.cmd [start^|restart^|stop^|logs^|status^|spotify-login^|spotify-status^|apple-music-status] 1>&2
 exit /b 1
 
 :start
 call :ensure_environment
 if errorlevel 1 exit /b 1
 call :check_spotify
+call :check_apple_music
 echo CappyFM: building and starting the bot and Lavalink...
 docker compose up -d --build
 if errorlevel 1 exit /b 1
@@ -35,6 +38,7 @@ exit /b 0
 call :ensure_environment
 if errorlevel 1 exit /b 1
 call :check_spotify
+call :check_apple_music
 echo CappyFM: rebuilding and restarting...
 docker compose up -d --build --force-recreate
 if errorlevel 1 exit /b 1
@@ -73,6 +77,21 @@ call :ensure_environment
 if errorlevel 1 exit /b 1
 call :check_spotify
 exit /b %errorlevel%
+
+:apple_music_status
+call :ensure_environment
+if errorlevel 1 exit /b 1
+call :check_apple_music
+exit /b %errorlevel%
+
+:check_apple_music
+findstr /R /C:"^[ ]*APPLE_MUSIC_API_TOKEN=.[^ ]*" .env >nul
+if errorlevel 1 (
+  echo CappyFM: Apple Music link support is disabled. Add APPLE_MUSIC_API_TOKEN to .env.
+  exit /b 1
+)
+echo CappyFM: Apple Music song, album, and playlist link support is configured.
+exit /b 0
 
 :check_spotify
 set "SPOTIFY_MISSING=0"

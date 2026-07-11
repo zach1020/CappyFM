@@ -68,6 +68,15 @@ spotify_status() {
   return "$missing"
 }
 
+apple_music_status() {
+  if grep -Eq '^[[:space:]]*APPLE_MUSIC_API_TOKEN=[^[:space:]].*$' .env; then
+    echo "CappyFM: Apple Music song, album, and playlist link support is configured."
+    return 0
+  fi
+  echo "CappyFM: Apple Music link support is disabled. Add APPLE_MUSIC_API_TOKEN to .env."
+  return 1
+}
+
 action="${1:-start}"
 
 case "$action" in
@@ -75,6 +84,7 @@ case "$action" in
     ensure_docker
     ensure_environment
     spotify_status || true
+    apple_music_status || true
     echo "CappyFM: building and starting the bot and Lavalink..."
     docker compose up -d --build
     docker compose ps
@@ -85,6 +95,7 @@ case "$action" in
     ensure_docker
     ensure_environment
     spotify_status || true
+    apple_music_status || true
     echo "CappyFM: rebuilding and restarting..."
     docker compose up -d --build --force-recreate
     docker compose ps
@@ -120,7 +131,11 @@ case "$action" in
     ensure_environment
     spotify_status
     ;;
+  apple-music-status|apple-status)
+    ensure_environment
+    apple_music_status
+    ;;
   *)
-    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status|spotify-login|spotify-status]"
+    die "unknown command '$action'. Use: ./run [start|restart|stop|logs|status|spotify-login|spotify-status|apple-music-status]"
     ;;
 esac
