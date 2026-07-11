@@ -30,13 +30,15 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # Explicitly prefer clients that can return playable audio streams. The
-    # defaults can successfully resolve radio metadata yet fail when the
-    # selected client is asked to stream from a cloud-hosted IP.
+    # Prefer a broad set of playback-capable clients. YouTube can allow a
+    # search result yet reject a particular client when it requests audio from
+    # a cloud-hosted IP, so each client below is an intentional fallback.
     clients:
+      - TVHTML5_SIMPLY
+      - IOS
+      - ANDROID_VR
       - WEB
       - MWEB
-      - ANDROID_VR
       - WEBEMBEDDED
   lavasrc:
     providers:
