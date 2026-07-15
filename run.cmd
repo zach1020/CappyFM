@@ -28,7 +28,7 @@ if errorlevel 1 exit /b 1
 call :check_spotify
 call :check_apple_music
 echo CappyFM: building and starting the bot and Lavalink...
-docker compose up -d --build
+docker compose up -d --build --force-recreate
 if errorlevel 1 exit /b 1
 docker compose ps
 echo.

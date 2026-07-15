@@ -86,7 +86,7 @@ case "$action" in
     spotify_status || true
     apple_music_status || true
     echo "CappyFM: building and starting the bot and Lavalink..."
-    docker compose up -d --build
+    docker compose up -d --build --force-recreate
     docker compose ps
     echo
     echo "CappyFM is running. Use './run logs' to watch it or './run stop' to shut it down."
